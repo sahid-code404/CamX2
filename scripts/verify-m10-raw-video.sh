@@ -84,12 +84,23 @@ for token in \
   'private fun detachImageReaderLease(image: I): AutoCloseable' \
   'defaultDetachedPairingBudget(retainedBytes).pendingImageBytes' \
   'fun pendingImageByteCount(): Long' \
-  'pendingImageBytes = Math.subtractExact' ; do
+  'pendingImageBytes = Math.subtractExact' \
+  'maximumPendingResultEntries: Int = M10RawVideoLimits.MAX_PAIR_ENTRIES' \
+  'CaptureResult.REQUEST_PIPELINE_DEPTH' \
+  'enforceImageEntryBound()' \
+  'enforceResultEntryBound()' \
+  'bounded detached-image entry budget' \
+  'bounded result-metadata entry budget'; do
   rg --fixed-strings --quiet "$token" "$pairer" || {
-    echo "M10 timestamp-pairing lease/memory bound missing: $token" >&2
+    echo "M10 timestamp-pairing lease/memory/skew bound missing: $token" >&2
     exit 1
   }
 done
+
+if rg --fixed-strings --quiet 'images.size + results.size <= maximumPendingEntries' "$pairer"; then
+  echo 'M10 must not cross-charge lightweight result metadata against the detached-image entry budget.' >&2
+  exit 1
+fi
 
 for token in \
   'class DetachedRawSensorImage' \
@@ -175,10 +186,12 @@ for token in \
 done
 
 for token in \
+  'resultMetadataSkewCanExceedDetachedImageEntryBudgetWithoutCrossCharging' \
+  'resultMetadataOverflowFailsClosedInsteadOfEvictingOldResults' \
   'detachedByteOverflowClosesAllOwnedEvidenceAndFailsInsteadOfDropping' \
   'detachedFrameByteExtentCannotChangeInsidePairingEpoch'; do
   rg --fixed-strings --quiet "$token" "$pairer_test" || {
-    echo "M10 detached pairer byte test missing: $token" >&2
+    echo "M10 detached pairer skew/byte test missing: $token" >&2
     exit 1
   }
 done
