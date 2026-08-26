@@ -64,22 +64,42 @@ internal class DetachedRawSensorImage private constructor(
                 require(source.format == ImageFormat.RAW_SENSOR) {
                     "M10 pairing detachment only accepts public RAW_SENSOR images"
                 }
-                require(source.width > 0 && source.height > 0)
-                require(source.timestamp > 0L) { "M10 RAW image timestamp must be positive before detachment" }
+                val width = source.width
+                val height = source.height
+                val timestampNs = source.timestamp
+                require(width > 0 && height > 0)
+                require(timestampNs > 0L) { "M10 RAW image timestamp must be positive before detachment" }
                 val sourcePlanes = source.planes
                 require(sourcePlanes.size == 1) { "M10 public RAW_SENSOR detachment requires exactly one plane" }
                 val planes = sourcePlanes.map { plane ->
-                    require(plane.rowStride > 0 && plane.pixelStride > 0)
+                    require(plane.pixelStride == M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
+                        "M10 RAW_SENSOR detachment requires the public 16-bit unpacked pixel stride"
+                    }
+                    val meaningfulRowBytes = Math.multiplyExact(width, plane.pixelStride)
+                    require(plane.rowStride >= meaningfulRowBytes) {
+                        "M10 RAW_SENSOR row stride is smaller than a meaningful row"
+                    }
+                    val sourceRequiredLong = Math.addExact(
+                        Math.multiplyExact((height - 1).toLong(), plane.rowStride.toLong()),
+                        meaningfulRowBytes.toLong(),
+                    )
+                    require(sourceRequiredLong in 1..Int.MAX_VALUE.toLong()) {
+                        "M10 detached RAW plane extent exceeds the bounded JVM snapshot"
+                    }
                     val sourceBuffer = plane.buffer.duplicate().apply { clear() }
-                    val bytes = ByteArray(sourceBuffer.remaining())
+                    require(sourceRequiredLong <= sourceBuffer.capacity().toLong()) {
+                        "M10 RAW source buffer is shorter than its declared row layout"
+                    }
+                    sourceBuffer.limit(sourceRequiredLong.toInt())
+                    val bytes = ByteArray(sourceRequiredLong.toInt())
                     sourceBuffer.get(bytes)
                     DetachedPlane(plane.rowStride, plane.pixelStride, bytes)
                 }.toTypedArray<Image.Plane>()
                 return DetachedRawSensorImage(
                     detachedFormat = source.format,
-                    detachedWidth = source.width,
-                    detachedHeight = source.height,
-                    detachedTimestampNs = source.timestamp,
+                    detachedWidth = width,
+                    detachedHeight = height,
+                    detachedTimestampNs = timestampNs,
                     detachedPlanes = planes,
                 )
             } finally {
