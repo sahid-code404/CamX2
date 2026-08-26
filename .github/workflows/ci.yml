@@ -102,6 +102,9 @@ jobs:
       - name: Verify architecture document and type inventory
         run: ./scripts/verify-architecture.sh
 
+      - name: Verify computational RAW Revision 2 freeze
+        run: ./scripts/verify-computational-raw-architecture.sh
+
       - name: Run host native tests
         run: ./scripts/test-native.sh
 

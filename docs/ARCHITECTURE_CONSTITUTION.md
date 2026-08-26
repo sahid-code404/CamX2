@@ -61,6 +61,49 @@ architecture migration.
 26. Phase 3 processing consumes acquisition outputs behind `ImageProcessor`; it cannot change the
     Phase-2 camera ownership model without an explicit architecture migration.
 
+## Computational RAW Revision 2 extension
+
+27. The accepted computational imaging engine is `EvidenceConstrainedImagingEngine`. Photo and video
+    share one scientific core; acquisition/temporal/deadline/persistence policies may differ.
+28. Sensor truth means a public interpretable sensor-domain representation with no CamX
+    sample-changing processing. It never promises an unknowable absence of sensor/HAL corrections.
+29. Acquisition truth is typed as `InterpretableSensorDomain`, `CameraProcessed`, or
+    `OpaqueTransport`. Processed and opaque inputs can never be relabeled into sensor truth.
+30. `SensorNegative`, `ComputationalNegative<FusedCfaRadiance | LinearSceneRgb>`, and
+    `ProcessedSourceMaster` are distinct products. `LinearSceneRgb` is never remosaiced merely to
+    appear RAW.
+31. One reconstruction contains exactly one canonical optical lens and one compatible historical
+    route/profile/calibration epoch unless a future multi-camera Tier-A ADR defines a new product.
+32. The Camera2-to-imaging boundary is a bounded, generation/permit-bound one-time handoff. After
+    transfer, capture identity is immutable historical truth and cannot be re-resolved from live UI
+    or topology state.
+33. Sensor-mode graphs bypass every CamX sample-changing computational node. A processed-source
+    fallback is legal only when `SourcePolicy` permits it and produces a processed-source artifact.
+34. Graph edges/nodes are representation-, shape-, calibration-, temporal-, uncertainty-, precision-,
+    resource-, backend-, and version-aware. An illegal or unbounded graph fails admission before
+    capture.
+35. Worst-case resource reservation precedes acquisition. OOM probing, unbounded full-resolution
+    frame stacks, unbounded metadata, and silent arbitrary Sensor-video drops are forbidden.
+36. Deterministic scalar/reference algorithms define required semantics. SIMD, Vulkan, and AI are
+    optional qualified providers and cannot redefine source or product truth.
+37. Measurement, calibration, noise, visibility/occlusion/inlier support, motion ambiguity, and
+    uncertainty are explicit scientific state. Missing evidence lowers confidence or triggers a
+    measured fallback; it is never replaced by invented detail.
+38. `SensorDngWriter` and `ComputationalDngWriter` are separate contracts. CFA versus Linear DNG
+    follows actual output semantics, and no metadata is fabricated for decoder acceptance.
+39. `RawVideoContainerContract` is frozen independently of any byte-container implementation.
+    MCAP/CXRB remains provisional until its M2A durability/performance/recovery gate passes.
+40. `RawVideoCodecContract` is frozen with mandatory reversible `PACKED_NONE`; compressed codecs are
+    provisional and admission never relies on an assumed compression ratio.
+41. Source deletion occurs only after a committed, reopened, verified output and durable retention
+    commit. Storage, backend, algorithm, thermal, or publication failure cannot damage camera trust.
+42. Support claims are exact-profile evidence keyed by lens/route/profile/representation/size/FPS/
+    stream combination and relevant provider/storage/software fingerprints; build success or device
+    marketing identity is not physical certification.
+43. Negative production stops before artistic rendering. AI remains optional, versioned,
+    measurement-constrained, and removable. V1 compute is bounded, foreground lifecycle-scoped and
+    in-process; separate-process/background execution requires later explicit proof and ADRs.
+
 ## Simplicity test
 
 Every abstraction must state the state or resource it owns, the invariant it enforces, and its
