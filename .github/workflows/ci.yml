@@ -114,6 +114,9 @@ jobs:
       - name: Verify M2B provisional RAW-video codec
         run: ./scripts/verify-m2b-codec.sh
 
+      - name: Verify M3 deterministic typed DAG/compiler
+        run: ./scripts/verify-m3-graph.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
