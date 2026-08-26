@@ -1,0 +1,63 @@
+name: Bootstrap CamX2 from CamX
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/bootstrap-from-camx.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: camx2-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CamX2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone frozen CamX source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/sahid-code404/CamX.git /tmp/camx-source
+          git -C /tmp/camx-source checkout --detach 79b84da86f87b94cb1c7080ead0ca4d81ad22e3e
+
+      - name: Replace repository contents with CamX snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude='.git/' /tmp/camx-source/ "$GITHUB_WORKSPACE/"
+          rm -rf "$GITHUB_WORKSPACE/.github/workflows/bootstrap-from-camx.yml"
+
+      - name: Record source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > CAMX2_BASELINE.md <<'EOF'
+          # CamX2 imported baseline
+
+          CamX2 was bootstrapped from the working CamX repository before the computational RAW architecture migration.
+
+          - Source repository: `sahid-code404/CamX`
+          - Source branch at import: `rewrite/architecture-foundation`
+          - Source commit: `79b84da86f87b94cb1c7080ead0ca4d81ad22e3e`
+          - Import policy: preserve application behavior first; architecture work is layered on top without creating a second Camera2 owner or rewriting the working camera foundation.
+          EOF
+
+      - name: Commit imported working baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Bootstrap CamX2 from working CamX baseline'
+          git push origin HEAD:main
