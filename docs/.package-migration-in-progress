@@ -1,1 +1,0 @@
-CamX2 application ID migration is being applied atomically across Gradle, OTA trust, packaging verification, and release endpoints.
