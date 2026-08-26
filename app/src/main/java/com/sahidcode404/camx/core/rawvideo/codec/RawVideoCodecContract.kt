@@ -7,7 +7,6 @@ import com.sahidcode404.camx.core.camera.acquisition.M1AcquisitionLimits
 import com.sahidcode404.camx.core.camera.acquisition.RepresentationDescriptor
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.util.Collections
 import java.util.zip.CRC32
 
 object RawVideoCodecLimits {
@@ -42,14 +41,10 @@ data class RawVideoCodecDescriptor(
     val family: String,
     val version: Int,
     val pretransform: RawVideoCodecPretransform,
-    parameters: List<RawVideoCodecParameter> = emptyList(),
+    val parameters: List<RawVideoCodecParameter> = emptyList(),
     val independentFrameDecode: Boolean = true,
     val independentTileDecode: Boolean = false,
 ) {
-    val parameters: List<RawVideoCodecParameter> = Collections.unmodifiableList(
-        ArrayList(parameters.sortedWith(compareBy(RawVideoCodecParameter::key, RawVideoCodecParameter::value))),
-    )
-
     init {
         require(family.isNotBlank()) { "Codec family must be named" }
         require(version > 0) { "Codec version must be positive" }
@@ -132,12 +127,8 @@ data class EncodedFrameHeader(
     val encodedSha256: String,
     val decodedRasterSha256: String,
     val representationDescriptorSha256: String,
-    frameParameters: List<RawVideoCodecParameter> = emptyList(),
+    val frameParameters: List<RawVideoCodecParameter> = emptyList(),
 ) {
-    val frameParameters: List<RawVideoCodecParameter> = Collections.unmodifiableList(
-        ArrayList(frameParameters.sortedWith(compareBy(RawVideoCodecParameter::key, RawVideoCodecParameter::value))),
-    )
-
     init {
         require(decodedByteCount in 1L..RawVideoCodecLimits.MAX_FRAME_BYTES) {
             "Decoded frame length exceeds the M2B bound"

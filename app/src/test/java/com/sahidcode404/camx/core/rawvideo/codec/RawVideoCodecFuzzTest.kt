@@ -31,7 +31,7 @@ class RawVideoCodecFuzzTest {
         val random = Random(0x51ce)
         repeat(200) { caseIndex ->
             val size = 16 + random.nextInt(1, 512) * 2
-            val payload = ByteArray(size).also(random::nextBytes)
+            val payload = ByteArray(size).also { random.nextBytes(it) }
             val frame = m2bFrame(payload)
             val packet = RiceDeltaByteCodec.encode(frame).take()
             val mutated = packet.copyPayload()
