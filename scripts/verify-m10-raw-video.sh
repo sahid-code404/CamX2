@@ -15,8 +15,13 @@ readonly store='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/
 readonly graph='app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/VisiblePreviewGraph.kt'
 readonly activity='app/src/main/java/com/sahidcode404/camx/MainActivity.kt'
 readonly doc='docs/computational-raw/M10_SENSOR_RAW_VIDEO_ACQUISITION.md'
+readonly reservation_test='app/src/test/java/com/sahidcode404/camx/core/rawvideo/recording/SensorRawVideoReservationTest.kt'
+readonly pairer_test='app/src/test/java/com/sahidcode404/camx/core/rawvideo/recording/RawVideoTimestampPairerTest.kt'
+readonly detached_test='app/src/test/java/com/sahidcode404/camx/core/rawvideo/recording/DetachedRawSensorImageTest.kt'
 
-for file in "$owner" "$model" "$pairer" "$detached" "$assembler" "$ingest" "$spool" "$store" "$graph" "$activity" "$doc"; do
+for file in \
+  "$owner" "$model" "$pairer" "$detached" "$assembler" "$ingest" "$spool" "$store" \
+  "$graph" "$activity" "$doc" "$reservation_test" "$pairer_test" "$detached_test"; do
   test -s "$file" || { echo "M10 artifact missing: $file" >&2; exit 1; }
 done
 
@@ -39,6 +44,11 @@ done
 for token in \
   'DEFAULT_INGEST_QUEUE_FRAMES = 2' \
   'DEFAULT_MAX_RESIDENT_BYTES = 256L * 1024L * 1024L' \
+  'defaultDetachedPairingBudget(canonicalBytesPerFrame' \
+  'val pairingPendingImageFrames: Int' \
+  'val pairingPendingImageBytes: Long' \
+  'val reservedDetachedPairingBytes: Long' \
+  'reservedDetachedPairingBytes = pairingBudget.reservedDetachedBytes' \
   'sealed interface SensorRawVideoStatus' \
   'sealed interface SensorRawVideoStartOutcome' \
   'sealed interface SensorRawVideoStopOutcome'; do
@@ -64,19 +74,27 @@ if rg --fixed-strings --quiet 'ArrayBlockingQueue<PairedRawVideoSample<Image, Ca
 fi
 
 for token in \
-  'private val images = LinkedHashMap<Long, AutoCloseable>()' \
+  'internal interface RetainedByteEvidence' \
+  'private val images = LinkedHashMap<Long, PendingImage>()' \
   'DetachedRawSensorImage.copyAndClose(image)' \
-  'private fun detachImageReaderLease(image: I): AutoCloseable'; do
+  'private fun detachImageReaderLease(image: I): AutoCloseable' \
+  'defaultDetachedPairingBudget(retainedBytes).pendingImageBytes' \
+  'fun pendingImageByteCount(): Long' \
+  'pendingImageBytes = Math.subtractExact' ; do
   rg --fixed-strings --quiet "$token" "$pairer" || {
-    echo "M10 timestamp-pairing lease detachment missing: $token" >&2
+    echo "M10 timestamp-pairing lease/memory bound missing: $token" >&2
     exit 1
   }
 done
 
 for token in \
   'class DetachedRawSensorImage' \
+  ': RetainedByteEvidence' \
   'source.close()' \
   'fun takeCanonicalRaster(): ByteArray' \
+  'internal fun copyCanonicalRawPlane(' \
+  'val sourceBase = source.position().toLong()' \
+  'val availableBytes = source.remaining().toLong()' \
   'val canonical = ByteArray(canonicalBytesLong.toInt())'; do
   rg --fixed-strings --quiet "$token" "$detached" || {
     echo "M10 detached RAW evidence contract missing: $token" >&2
@@ -86,6 +104,11 @@ done
 
 if rg --line-number ':\s*Image(\.Plane)?\s*\(' "$detached"; then
   echo 'M10 detached evidence must not subclass framework Image or Image.Plane.' >&2
+  exit 1
+fi
+
+if rg --fixed-strings --quiet 'apply { clear() }' "$detached"; then
+  echo 'M10 detached RAW copy must respect the Image plane ByteBuffer position/limit window.' >&2
   exit 1
 fi
 
@@ -120,6 +143,33 @@ for token in \
   }
 done
 
+for token in \
+  'reservationProvesCanonicalQueueAndDetachedPairingBeforeCapture' \
+  'reservationFailsClosedWhenDetachedPendingAndInflightFramesCannotFit'; do
+  rg --fixed-strings --quiet "$token" "$reservation_test" || {
+    echo "M10 detached admission test missing: $token" >&2
+    exit 1
+  }
+done
+
+for token in \
+  'detachedByteOverflowClosesAllOwnedEvidenceAndFailsInsteadOfDropping' \
+  'detachedFrameByteExtentCannotChangeInsidePairingEpoch'; do
+  rg --fixed-strings --quiet "$token" "$pairer_test" || {
+    echo "M10 detached pairer byte test missing: $token" >&2
+    exit 1
+  }
+done
+
+for token in \
+  'canonicalCopyRespectsNonzeroBufferPositionAndLimit' \
+  'canonicalCopyFailsWhenDeclaredRowsExceedBufferWindow'; do
+  rg --fixed-strings --quiet "$token" "$detached_test" || {
+    echo "M10 RAW buffer-window test missing: $token" >&2
+    exit 1
+  }
+done
+
 if rg --line-number 'acquireLatestImage\s*\(' "$owner" "$ingest" "$assembler"; then
   echo 'M10 forbids acquireLatestImage because continuous sensor evidence may not be silently dropped.' >&2
   exit 1
@@ -137,5 +187,6 @@ fi
 rg --fixed-strings --quiet 'PACKED_NONE' "$spool"
 rg --fixed-strings --quiet 'Sensor RAW video is not physically certified by CI.' "$doc"
 rg --fixed-strings --quiet 'CameraSessionController remains the sole Camera2 owner.' "$doc"
+rg --fixed-strings --quiet 'detached pairing memory' "$doc"
 
 echo 'M10 continuous sensor RAW-video acquisition and UI integration verification passed.'
