@@ -261,11 +261,19 @@ private fun alignmentEvidenceSha256(alignment: AlignmentEvidenceSet): String {
             append('|').append(frame.decision.name)
             append('|').append(frame.translation.dxPixels).append(',').append(frame.translation.dyPixels)
             append('|').append(java.lang.Double.toHexString(frame.translation.meanNormalizedSquaredResidual))
-            append('|').append(frame.translation.secondBestMeanNormalizedSquaredResidual?.let(java.lang.Double::toHexString) ?: "null")
+            append('|').append(
+                frame.translation.secondBestMeanNormalizedSquaredResidual?.let {
+                    java.lang.Double.toHexString(it)
+                } ?: "null",
+            )
             append('|').append(java.lang.Double.toHexString(frame.uncertainty.translationSigmaPixels))
             append('|').append(java.lang.Double.toHexString(frame.uncertainty.residualSigma))
             append('|').append(java.lang.Double.toHexString(frame.uncertainty.supportLossFraction))
-            append('|').append(frame.rollingShutter.bandDisagreementPixels?.let(java.lang.Double::toHexString) ?: "null")
+            append('|').append(
+                frame.rollingShutter.bandDisagreementPixels?.let {
+                    java.lang.Double.toHexString(it)
+                } ?: "null",
+            )
         }
     }
     return sha256Utf8(canonical)
