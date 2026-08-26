@@ -36,6 +36,18 @@ class CameraCaptureUiContractTest {
     }
 
     @Test
+    fun `video failure reason is not hidden behind generic cancellation`() {
+        val activity = source("src/main/java/com/sahidcode404/camx/MainActivity.kt")
+        val ingest = source("src/main/java/com/sahidcode404/camx/core/rawvideo/recording/AndroidSensorRawVideoIngest.kt")
+        assertTrue(activity.contains("LaunchedEffect(rawVideoStatus)"))
+        assertTrue(activity.contains("visiblePreviewGraph.rawVideoStatus.value"))
+        assertTrue(activity.contains("is SensorRawVideoStatus.Failed"))
+        assertTrue(activity.contains("TimeoutCancellationException"))
+        assertTrue(ingest.contains("INGEST_BACKPRESSURE_TIMEOUT_MILLIS"))
+        assertTrue(ingest.contains("queue.offer("))
+    }
+
+    @Test
     fun `activity calls graph capture rather than owning Camera2`() {
         val activity = source("src/main/java/com/sahidcode404/camx/MainActivity.kt")
         assertTrue(activity.contains("visiblePreviewGraph.capturePhoto(currentDisplayRotation())"))
