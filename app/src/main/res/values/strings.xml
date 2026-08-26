@@ -7,6 +7,7 @@
     <string name="capture_unavailable_content_description">Capture is unavailable in the visible preview checkpoint</string>
     <string name="capture_raw_photo_content_description">Capture RAW photo</string>
     <string name="capture_raw_video_content_description">Start RAW video recording</string>
+    <string name="stop_raw_video_content_description">Stop RAW video recording</string>
     <string name="camera_mode_photo">PHOTO</string>
     <string name="camera_mode_video">VIDEO</string>
     <string name="capture_raw_busy">Capturing RAW…</string>
@@ -14,7 +15,15 @@
     <string name="capture_raw_cancelled">Capture cancelled</string>
     <string name="capture_raw_failed">RAW capture failed</string>
     <string name="capture_storage_permission_required">Storage permission is required to save DNG photos on this Android version.</string>
-    <string name="raw_video_m10_unavailable">Sensor RAW video recording arrives with the M10 acquisition milestone.</string>
+    <string name="raw_video_unavailable">Sensor RAW video is unavailable on this camera route.</string>
+    <string name="raw_video_starting">Starting sensor RAW recording…</string>
+    <string name="raw_video_stopping">Finishing sensor RAW recording…</string>
+    <string name="raw_video_cancelled">RAW video recording cancelled</string>
+    <string name="raw_video_not_recording">RAW video is not recording</string>
+    <string name="raw_video_saved">RAW video saved · %1$d frames</string>
+    <string name="raw_video_failed">RAW video failed: %1$s</string>
+    <string name="raw_video_unknown_failure">Unknown RAW-video failure</string>
+    <string name="raw_video_recording_timer">REC %1$s</string>
     <string name="camera_preview_starting">Starting camera…</string>
     <string name="camera_preview_waiting_surface">Preparing viewfinder…</string>
     <string name="camera_preview_opening">Opening camera…</string>
