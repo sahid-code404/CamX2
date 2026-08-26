@@ -21,6 +21,18 @@ class AndroidSensorRawVideoIngestOwnershipContractTest {
         assertFalse(source.contains("queue.forEach { it.close() }"))
     }
 
+    @Test
+    fun `spool queue owns at most the admitted number of full RAW frames`() {
+        val spool = source("src/main/java/com/sahidcode404/camx/core/rawvideo/recording/CxrbSensorRawVideoSpool.kt")
+        val model = source("src/main/java/com/sahidcode404/camx/core/rawvideo/recording/SensorRawVideoModel.kt")
+
+        assertTrue(spool.contains("ArrayBlockingQueue<FrameBatch>(queueFrames)"))
+        assertTrue(spool.contains("queue.offer(FrameBatch(gapBefore, frame))"))
+        assertFalse(spool.contains("queueCapacityRecords"))
+        assertTrue(model.contains("spoolQueueFrames = ingestQueueFrames"))
+        assertTrue(model.contains("reservedSpoolQueueBytes = queueBytes"))
+    }
+
     private fun source(relative: String): String {
         val candidates = listOf(File(relative), File("app/$relative"))
         return candidates.firstOrNull(File::isFile)?.readText()
