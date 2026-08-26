@@ -1,6 +1,7 @@
 package com.sahidcode404.camx.core.imaging.alignment
 
 import com.sahidcode404.camx.core.imaging.calibration.CalibratedMeasurementFrameSet
+import java.security.MessageDigest
 import java.util.Collections
 import kotlin.math.abs
 import kotlin.math.max
@@ -83,7 +84,6 @@ class AlignmentReservation private constructor(
                 nonReferenceFrames,
                 "M6 score-evaluation proof overflow",
             )
-            // Global field plus independent top and bottom rolling-shutter evidence searches.
             val required = checkedMultiply(globalEvaluations, 3L, "M6 rolling-shutter score proof overflow")
             require(required <= maxScoreEvaluations) {
                 "M6 alignment search exceeds the admitted deterministic score-evaluation budget"
@@ -234,6 +234,11 @@ class AlignmentEvidenceSet internal constructor(
     val frames: List<AlignedFrameEvidence> = Collections.unmodifiableList(ArrayList(frames.sortedBy { it.ordinal }))
     val reconstructionOrdinals: List<Int> = Collections.unmodifiableList(ArrayList(reconstructionOrdinals.sorted()))
     val referenceOrdinal: Int = request.referenceOrdinal
+    val calibrationProfileSha256: String = measurements.profile.digestSha256()
+    val sourceCanonicalSha256ByOrdinal: List<String> = Collections.unmodifiableList(
+        ArrayList(measurements.frames.map { it.sourceCanonicalSha256 }),
+    )
+    val measurementBindingSha256: String = measurementBindingSha256(measurements)
 
     init {
         require(this.frames.size == measurements.frames.size)
@@ -245,6 +250,9 @@ class AlignmentEvidenceSet internal constructor(
         require(reservation.frameCount == measurements.frames.size)
         require(reservation.request == request)
     }
+
+    fun isBoundTo(candidate: CalibratedMeasurementFrameSet): Boolean =
+        measurementBindingSha256 == measurementBindingSha256(candidate)
 
     fun supportAt(frameOrdinal: Int, x: Int, y: Int): PixelMeasurementSupport {
         require(frameOrdinal in frames.indices) { "Alignment support frame ordinal is outside the FrameSet" }
@@ -292,6 +300,36 @@ class AlignmentEvidenceSet internal constructor(
             alignmentTranslationSigmaPixels = evidence.uncertainty.translationSigmaPixels,
         )
     }
+}
+
+private fun measurementBindingSha256(measurements: CalibratedMeasurementFrameSet): String {
+    val context = measurements.context
+    val canonical = buildString {
+        append(context.captureToken.value).append('|')
+        append(context.selectionGeneration.value).append('|')
+        append(context.sessionGeneration.value).append('|')
+        append(context.canonicalLensFingerprint.value).append('|')
+        append(context.cameraProfileFingerprint.value).append('|')
+        append(context.routeId.value).append('|')
+        append(context.displayRotationAtShutter.name).append('|')
+        append(context.sensorOrientationDegrees).append('|')
+        append(context.lensFacing.name).append('|')
+        append(context.rawSize.width).append('x').append(context.rawSize.height).append('|')
+        append(context.timeoutMillis).append('|')
+        append(measurements.profile.digestSha256())
+        measurements.frames.forEach { frame ->
+            append('|').append(frame.ordinal)
+            append('|').append(frame.sourceCanonicalSha256)
+            append('|').append(frame.metadata.sensorTimestampNs)
+            append('|').append(frame.metadata.frameNumber)
+            append('|').append(frame.metadata.exposureTimeNs ?: "null")
+            append('|').append(frame.metadata.sensitivityIso ?: "null")
+            append('|').append(frame.metadata.frameDurationNs ?: "null")
+        }
+    }
+    return MessageDigest.getInstance("SHA-256")
+        .digest(canonical.toByteArray(Charsets.UTF_8))
+        .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }
 
 private fun insideActive(left: Int, top: Int, width: Int, height: Int, x: Int, y: Int): Boolean =
