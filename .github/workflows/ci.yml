@@ -123,6 +123,9 @@ jobs:
       - name: Verify M5 calibration and noise reference
         run: bash ./scripts/verify-m5-calibration.sh
 
+      - name: Verify M6 alignment visibility and uncertainty
+        run: bash ./scripts/verify-m6-alignment.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
