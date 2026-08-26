@@ -19,13 +19,20 @@ class CameraCaptureUiContractTest {
     }
 
     @Test
-    fun `video control is visible but truthfully gated until M10`() {
+    fun `video control invokes real M10 start and stop bridge`() {
         val screen = source("src/main/java/com/sahidcode404/camx/feature/camera/CameraScreen.kt")
         val activity = source("src/main/java/com/sahidcode404/camx/MainActivity.kt")
-        assertTrue(screen.contains("CameraCaptureMode.VIDEO"))
-        assertTrue(screen.contains("raw_video_m10_unavailable"))
+        val graph = source("src/main/java/com/sahidcode404/camx/core/camera/bootstrap/VisiblePreviewGraph.kt")
         assertTrue(screen.contains("CameraCaptureMode.VIDEO -> onToggleVideoRecording()"))
-        assertTrue(activity.contains("videoCaptureEnabled = false"))
+        assertTrue(screen.contains("stop_raw_video_content_description"))
+        assertTrue(screen.contains("RawRecordingTimer("))
+        assertTrue(activity.contains("visiblePreviewGraph.startRawVideo(currentDisplayRotation())"))
+        assertTrue(activity.contains("visiblePreviewGraph.stopRawVideo()"))
+        assertTrue(activity.contains("videoCaptureEnabled = videoUiEnabled"))
+        assertFalse(activity.contains("videoCaptureEnabled = false"))
+        assertFalse(activity.contains("onToggleVideoRecording = {}"))
+        assertTrue(graph.contains("controller.startRawVideo(displayRotation, rawVideoStore)"))
+        assertTrue(graph.contains("controller.stopRawVideo()"))
     }
 
     @Test
