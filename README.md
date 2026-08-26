@@ -1,11 +1,10 @@
-# CamX
+# CamX2
 
-CamX is a universal Android camera platform under an architecture-first rebuild. This checkpoint
-establishes ownership, state, cache, topology, preview, RAW, native-memory, and debug-OTA contracts;
-it intentionally does not claim Phase 2 photography completeness or hardware support.
+CamX2 is a universal Android camera platform built from the accepted working CamX baseline and extended under the computational RAW architecture. This checkpoint preserves camera ownership, state, cache, topology, preview, RAW, native-memory, and development-OTA contracts while the new imaging architecture is layered on top.
 
-The permanent development package is `com.sahidcode404.camx`, so CamX and the reference CameX app
-can be installed together for hardware A/B testing.
+The permanent Android install identity is `com.sahidcode404.camx2`. It is intentionally different from the existing CamX package `com.sahidcode404.camx`, so CamX2 and CamX can be installed on the same device without replacing each other or sharing app data.
+
+The Kotlin/Android source namespace remains `com.sahidcode404.camx` for compatibility with the migrated implementation. Namespace/source package and Android `applicationId` are deliberately separate concerns; only the latter controls package-manager install identity.
 
 ## Verify
 

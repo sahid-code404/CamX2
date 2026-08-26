@@ -27,7 +27,7 @@ sealed interface UpdateVerification {
 object DevOtaTrust {
     const val SCHEMA = 1
     const val CHANNEL = "development"
-    const val APPLICATION_ID = "com.sahidcode404.camx"
+    const val APPLICATION_ID = "com.sahidcode404.camx2"
     const val APK_ASSET_NAME = "CamX-dev.apk"
     const val APPLICATION_MIN_SDK = 23
     const val VERIFIED_UPDATE_RELATIVE_DIRECTORY = "updates/verified"

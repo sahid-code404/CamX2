@@ -22,7 +22,7 @@ done
 for literal in \
   'create("devOta")' \
   'isDebuggable = true' \
-  'applicationId = "com.sahidcode404.camx"' \
+  'applicationId = "com.sahidcode404.camx2"' \
   'keyAlias = "camx-dev"'; do
   rg --fixed-strings --quiet "$literal" "$build_file" || {
     echo "Development OTA Gradle requirement missing: $literal" >&2
@@ -55,6 +55,10 @@ test "$actual" = "$expected" || {
 }
 rg --fixed-strings --quiet "const val CERT_SHA256 = \"$expected\"" "$verifier" || {
   echo 'Runtime development signer pin does not match the permanent certificate.' >&2
+  exit 1
+}
+rg --fixed-strings --quiet "const val APPLICATION_ID = \"com.sahidcode404.camx2\"" "$verifier" || {
+  echo 'Runtime development package pin is not CamX2.' >&2
   exit 1
 }
 rg --fixed-strings --quiet "EXPECTED_DEV_SIGNER_SHA256: $expected" "$workflow" || {
@@ -93,8 +97,8 @@ for literal in 'class VerifiedApk private constructor' 'revalidateForInstall()' 
 done
 
 for literal in \
-  'https://github.com/sahid-code404/CamX/releases/download/dev-latest/dev-manifest.json' \
-  'https://github.com/sahid-code404/CamX/releases/download/dev-latest/CamX-dev.apk' \
+  'https://github.com/sahid-code404/CamX2/releases/download/dev-latest/dev-manifest.json' \
+  'https://github.com/sahid-code404/CamX2/releases/download/dev-latest/CamX-dev.apk' \
   'const val CONNECT_TIMEOUT_MILLIS = 10_000' \
   'const val READ_TIMEOUT_MILLIS = 20_000' \
   'const val MAX_REDIRECTS = 5'; do
@@ -163,4 +167,4 @@ if rg --line-number '\b(Service|ForegroundService|JobService|WorkManager)\b' "$u
   exit 1
 fi
 
-echo "Development OTA verification passed (signer $expected)."
+echo "Development OTA verification passed for com.sahidcode404.camx2 (signer $expected)."

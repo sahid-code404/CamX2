@@ -63,7 +63,7 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "com.sahidcode404.camx"
+        applicationId = "com.sahidcode404.camx2"
         minSdk = camxApplicationBaselineApi
         targetSdk = 37
         versionCode = devOtaVersionCode ?: (10_000 + ciRunNumber)

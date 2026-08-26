@@ -55,7 +55,7 @@ jobs:
           test "$(sha256sum artifacts-dev-ota/CamX-dev.apk | awk '{print $1}')" = \
             "$(jq -r '.sha256' artifacts-dev-ota/dev-manifest.json)"
           test "$(jq -r '.applicationId' artifacts-dev-ota/dev-manifest.json)" = \
-            'com.sahidcode404.camx'
+            'com.sahidcode404.camx2'
           test "$(jq -r '.minSdk' artifacts-dev-ota/dev-manifest.json)" = '23'
           test "$(jq -r '.signingCertSha256' artifacts-dev-ota/dev-manifest.json)" = \
             "$EXPECTED_DEV_SIGNER_SHA256"
@@ -124,8 +124,8 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest \
               --target "$SOURCE_SHA" \
-              --title 'CamX Development OTA' \
-              --notes "Verified development build for ${SOURCE_SHA}" \
+              --title 'CamX2 Development OTA' \
+              --notes "Verified CamX2 development build for ${SOURCE_SHA}" \
               --prerelease
           fi
 
@@ -146,6 +146,6 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/git/refs/tags/dev-latest" \
             -f sha="$SOURCE_SHA" -F force=true >/dev/null
           gh release edit dev-latest \
-            --title 'CamX Development OTA' \
-            --notes "Verified development build for ${SOURCE_SHA}" \
+            --title 'CamX2 Development OTA' \
+            --notes "Verified CamX2 development build for ${SOURCE_SHA}" \
             --prerelease

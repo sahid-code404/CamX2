@@ -1,1 +1,0 @@
-CamX2 architecture branch adopts Android application ID com.sahidcode404.camx2 while retaining the migrated source namespace com.sahidcode404.camx.

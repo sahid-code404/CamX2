@@ -1,17 +1,23 @@
 # Development OTA Architecture
 
-CamX development OTA is a deliberately non-production convenience channel:
+CamX2 development OTA is a deliberately non-production convenience channel:
 
-- package `com.sahidcode404.camx`;
+- Android application ID `com.sahidcode404.camx2`;
+- migrated source namespace `com.sahidcode404.camx`;
 - debuggable `devOta` build;
-- permanent distinct CamX signer pinned as SHA-256
+- permanent development signer pinned as SHA-256
   `f6b8a3f492d4fb9d2dbf58937d3995f8f1e0f79433c4f3e25b9930218e694d8c`;
-- rolling GitHub prerelease/tag `dev-latest`;
+- rolling GitHub prerelease/tag `dev-latest` in `sahid-code404/CamX2`;
 - assets `CamX-dev.apk` and `dev-manifest.json`.
 
 The private dev key is committed so fresh clones and small changes can retain update continuity. This
 means anyone with repository contents can forge the development channel; it is not an authenticity
 or production-security boundary. A stable channel requires protected signing and a separate ADR.
+
+The distinct Android application ID is what permits CamX2 and the previous CamX APK
+(`com.sahidcode404.camx`) to coexist. OTA verification is intentionally bound to the CamX2 ID so an
+APK from the CamX package cannot update or replace CamX2, even though the internal source namespace
+is still inherited from the migrated CamX implementation.
 
 CI assigns a monotonic workflow-run-based versionCode, builds and verifies all required jobs, and
 only then invokes the reusable publisher for the same SHA/artifact. Publishers are globally serialized
@@ -36,8 +42,8 @@ verification run off the camera dispatcher and off the Compose main thread.
 
 The development endpoints are fixed in code:
 
-- `https://github.com/sahid-code404/CamX/releases/download/dev-latest/dev-manifest.json`
-- `https://github.com/sahid-code404/CamX/releases/download/dev-latest/CamX-dev.apk`
+- `https://github.com/sahid-code404/CamX2/releases/download/dev-latest/dev-manifest.json`
+- `https://github.com/sahid-code404/CamX2/releases/download/dev-latest/CamX-dev.apk`
 
 The client does not accept an APK URL from the manifest, preferences, intents, external storage, or
 UI. Redirects are followed manually, remain HTTPS, are bounded to five hops, and are restricted to
@@ -69,11 +75,11 @@ Mixed rolling generations therefore fail closed. `VerifiedApk` remains the only 
 
 `ApkInstaller` accepts only `VerifiedApk` and revalidates its private canonical path, file identity,
 size, modification time, and hash immediately before every install attempt. FileProvider exposes only
-`cacheDir/updates/verified/`. On Android 8+ a missing "Allow from this source" permission opens CamX's
-own system setting; returning with permission granted preserves the already verified APK and restores
-the explicit Install action. The user taps Install again to launch the normal Android package-update UI.
-The flow never uninstalls CamX, never clears app data, never uses a browser/file manager, and never
-attempts silent or privileged installation.
+`cacheDir/updates/verified/`. On Android 8+ a missing "Allow from this source" permission opens
+CamX2's own system setting; returning with permission granted preserves the already verified APK and
+restores the explicit Install action. The user taps Install again to launch the normal Android
+package-update UI. The flow never uninstalls CamX or CamX2, never clears app data, never uses a
+browser/file manager, and never attempts silent or privileged installation.
 
 Update work is owned by a lifecycle `ViewModel` scope, so ordinary Activity recreation does not create
 a duplicate download. No Service, ForegroundService, JobService, WorkManager, persistent daemon, or
