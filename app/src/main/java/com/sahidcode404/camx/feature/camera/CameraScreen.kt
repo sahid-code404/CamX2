@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.feature.camera
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -12,13 +13,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,6 +46,7 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceBinding
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.ui.components.StableSurfaceView
 import com.sahidcode404.camx.ui.design.CamXColors
+import kotlinx.coroutines.delay
 
 private enum class CameraCaptureMode {
     PHOTO,
@@ -59,6 +64,8 @@ fun CameraScreen(
     inventoryStatus: LensInventoryStatus? = null,
     photoCaptureEnabled: Boolean = false,
     videoCaptureEnabled: Boolean = false,
+    videoRecording: Boolean = false,
+    videoRecordingStartedElapsedRealtimeNs: Long? = null,
     captureBusy: Boolean = false,
     captureMessage: String? = null,
     onCapturePhoto: () -> Unit = {},
@@ -72,10 +79,15 @@ fun CameraScreen(
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
     val photoContentDescription = stringResource(R.string.capture_raw_photo_content_description)
-    val videoContentDescription = stringResource(R.string.capture_raw_video_content_description)
+    val startVideoContentDescription = stringResource(R.string.capture_raw_video_content_description)
+    val stopVideoContentDescription = stringResource(R.string.stop_raw_video_content_description)
     val revealPreviewSurface = shouldRevealPreviewSurface(uiState, renderSpec)
     var showAuxAudit by remember { mutableStateOf(false) }
     var captureMode by remember { mutableStateOf(CameraCaptureMode.PHOTO) }
+
+    LaunchedEffect(videoRecording) {
+        if (videoRecording) captureMode = CameraCaptureMode.VIDEO
+    }
 
     Box(
         modifier = Modifier
@@ -141,12 +153,19 @@ fun CameraScreen(
                 )
             }
 
-            if (captureMode == CameraCaptureMode.VIDEO && !videoCaptureEnabled) {
+            if (videoRecording && videoRecordingStartedElapsedRealtimeNs != null) {
+                RawRecordingTimer(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 214.dp),
+                    startedElapsedRealtimeNs = videoRecordingStartedElapsedRealtimeNs,
+                )
+            } else if (captureMode == CameraCaptureMode.VIDEO && !videoCaptureEnabled) {
                 Text(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(start = 24.dp, end = 24.dp, bottom = 214.dp),
-                    text = stringResource(R.string.raw_video_m10_unavailable),
+                    text = stringResource(R.string.raw_video_unavailable),
                     color = CamXColors.TextSecondary,
                 )
             }
@@ -164,6 +183,7 @@ fun CameraScreen(
                         key(item.canonicalFingerprint.value) {
                             LensTestButton(
                                 item = item,
+                                interactionEnabled = !videoRecording,
                                 onClick = { onLensSelected(item.canonicalFingerprint) },
                             )
                         }
@@ -181,22 +201,24 @@ fun CameraScreen(
                 ModeButton(
                     label = stringResource(R.string.camera_mode_photo),
                     selected = captureMode == CameraCaptureMode.PHOTO,
+                    enabled = !videoRecording,
                     onClick = { captureMode = CameraCaptureMode.PHOTO },
                 )
                 ModeButton(
                     label = stringResource(R.string.camera_mode_video),
                     selected = captureMode == CameraCaptureMode.VIDEO,
+                    enabled = true,
                     onClick = { captureMode = CameraCaptureMode.VIDEO },
                 )
             }
 
             val captureEnabled = permissionGranted && !captureBusy && when (captureMode) {
-                CameraCaptureMode.PHOTO -> photoCaptureEnabled
+                CameraCaptureMode.PHOTO -> photoCaptureEnabled && !videoRecording
                 CameraCaptureMode.VIDEO -> videoCaptureEnabled
             }
             val captureDescription = when (captureMode) {
                 CameraCaptureMode.PHOTO -> photoContentDescription
-                CameraCaptureMode.VIDEO -> videoContentDescription
+                CameraCaptureMode.VIDEO -> if (videoRecording) stopVideoContentDescription else startVideoContentDescription
             }
             val captureColor = when (captureMode) {
                 CameraCaptureMode.PHOTO -> Color.White
@@ -221,7 +243,15 @@ fun CameraScreen(
                     }
                 },
             ) {
-                Box(modifier = Modifier.size(1.dp))
+                if (captureMode == CameraCaptureMode.VIDEO && videoRecording) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .background(Color.White, RoundedCornerShape(5.dp)),
+                    )
+                } else {
+                    Box(modifier = Modifier.size(1.dp))
+                }
             }
         }
 
@@ -238,12 +268,40 @@ fun CameraScreen(
 }
 
 @Composable
+private fun RawRecordingTimer(
+    modifier: Modifier,
+    startedElapsedRealtimeNs: Long,
+) {
+    var nowNs by remember(startedElapsedRealtimeNs) {
+        mutableLongStateOf(SystemClock.elapsedRealtimeNanos())
+    }
+    LaunchedEffect(startedElapsedRealtimeNs) {
+        while (true) {
+            nowNs = SystemClock.elapsedRealtimeNanos()
+            delay(250L)
+        }
+    }
+    val elapsedSeconds = ((nowNs - startedElapsedRealtimeNs).coerceAtLeast(0L) / 1_000_000_000L)
+    val minutes = elapsedSeconds / 60L
+    val seconds = elapsedSeconds % 60L
+    val clock = "${twoDigits(minutes)}:${twoDigits(seconds)}"
+    Text(
+        modifier = modifier,
+        text = stringResource(R.string.raw_video_recording_timer, clock),
+        color = Color.Red,
+    )
+}
+
+private fun twoDigits(value: Long): String = if (value < 10L) "0$value" else value.toString()
+
+@Composable
 private fun ModeButton(
     label: String,
     selected: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    TextButton(onClick = onClick) {
+    TextButton(enabled = enabled, onClick = onClick) {
         Text(
             text = label,
             color = if (selected) CamXColors.TextPrimary else CamXColors.TextSecondary,
@@ -254,6 +312,7 @@ private fun ModeButton(
 @Composable
 private fun LensTestButton(
     item: CameraLensUiItem,
+    interactionEnabled: Boolean,
     onClick: () -> Unit,
 ) {
     val statusLabel = lensStatusText(item.status)
@@ -269,7 +328,7 @@ private fun LensTestButton(
                 contentDescription = description
                 selected = item.selected
             },
-        enabled = item.enabled,
+        enabled = item.enabled && interactionEnabled,
         onClick = onClick,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
