@@ -1,6 +1,6 @@
 # M10 — Continuous Sensor RAW Video Acquisition
 
-Status: software checkpoint implemented on `phase/camx2-m10-sensor-raw-video`.
+Status: software checkpoint implemented on `phase/camx2-m10-sensor-raw-video`; the exact-device `ImageReader.maxImages` lease fix is being validated on `phase/camx2-m10-image-lease-fix`.
 
 ## Scope
 
@@ -21,6 +21,12 @@ Each RAW image is paired to its Camera2 result through the positive `SENSOR_TIME
 A native `ImageReader` lease is never allowed to become timestamp-skew or storage-queue state. When an image arrives before its matching capture result, M10 first copies the complete declared RAW plane into detached heap-backed evidence and closes the source `Image`; timestamp pairing then owns only the detached snapshot. Once a pair exists, canonicalization again produces detached immutable frame evidence before asynchronous spool backpressure. This makes `ImageReader.maxImages` a short Camera2 delivery bound rather than a hidden buffering mechanism and directly prevents result-callback skew from exhausting acquired-image slots. The CI M10 guard checks this lease-detachment boundary so future queue changes cannot silently reintroduce native-image retention.
 
 The recording transaction has explicit start, recording, stopping, completed, failed, and idle states. Start is not reported as successful until the first RAW frame is verified. Stop drains the bounded pipeline, finalizes the container, releases RAW resources, and restores preview through the existing session-generation machinery.
+
+## `ImageReader.maxImages` regression acceptance
+
+The exact-device failure signature under test is `maxImages (4) has already been acquired, call #close before acquiring more`. This is treated as an ownership regression, not as a reason to increase `maxImages`, drop frames, or switch to `acquireLatestImage()`.
+
+For this regression to be considered fixed, every Camera2 `RAW_SENSOR` image acquired by the continuous-video listener must either be closed immediately on rejection/failure or be copied into detached evidence and have the source `Image.close()` completed before that evidence enters the timestamp-skew map. The downstream ingest queue must likewise contain canonical detached frame batches rather than live Camera2 `Image` objects. Repeated start/stop testing on the affected handset must run without the `maxImages` exception before this branch can be promoted.
 
 ## Admission, memory, and storage
 
