@@ -80,10 +80,10 @@ class RawVideoTimestampPairerTest {
             maximumPendingImageBytes = 10L,
         )
 
-        pairer.offerImage(1L, TestImage(closes, retainedBytes = 6L))
+        pairer.offerImage(1L, TestImage(closes, retainedByteCount = 6L))
         assertEquals(6L, pairer.pendingImageByteCount())
         val failure = runCatching {
-            pairer.offerImage(2L, TestImage(closes, retainedBytes = 6L))
+            pairer.offerImage(2L, TestImage(closes, retainedByteCount = 6L))
         }.exceptionOrNull()
 
         assertTrue(failure is IllegalStateException)
@@ -99,9 +99,9 @@ class RawVideoTimestampPairerTest {
             maximumPendingImageBytes = 100L,
         )
 
-        pairer.offerImage(1L, TestImage(closes, retainedBytes = 6L))
+        pairer.offerImage(1L, TestImage(closes, retainedByteCount = 6L))
         val failure = runCatching {
-            pairer.offerImage(2L, TestImage(closes, retainedBytes = 7L))
+            pairer.offerImage(2L, TestImage(closes, retainedByteCount = 7L))
         }.exceptionOrNull()
 
         assertTrue(failure is IllegalArgumentException)
