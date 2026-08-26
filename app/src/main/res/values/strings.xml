@@ -19,6 +19,7 @@
     <string name="raw_video_starting">Starting sensor RAW recording…</string>
     <string name="raw_video_stopping">Finishing sensor RAW recording…</string>
     <string name="raw_video_cancelled">RAW video recording cancelled</string>
+    <string name="raw_video_start_timeout">Camera did not establish the RAW video stream within 5 seconds.</string>
     <string name="raw_video_not_recording">RAW video is not recording</string>
     <string name="raw_video_saved">RAW video saved · %1$d frames</string>
     <string name="raw_video_failed">RAW video failed: %1$s</string>
