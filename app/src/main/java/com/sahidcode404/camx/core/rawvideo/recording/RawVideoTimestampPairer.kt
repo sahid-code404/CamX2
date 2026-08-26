@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
+import android.hardware.camera2.CaptureResult
 import android.media.Image
 import java.util.LinkedHashMap
 
@@ -45,9 +46,19 @@ class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
  * ImageReader.maxImages slots. Detached image evidence is also byte-bounded by the same default
  * M10 resident-admission formula used by SensorRawVideoReservation unless a stricter explicit cap
  * is supplied for a test or future custom admission path.
+ *
+ * Pending detached images and pending CaptureResults deliberately use different entry bounds.
+ * Detached images are the expensive side and remain constrained by the original image-entry bound
+ * plus the resident-byte proof. CaptureResults are lightweight metadata and may legitimately run
+ * farther ahead of ImageReader delivery on a continuous RAW stream, so they receive a separate
+ * bounded window. Production Camera2 results additionally prove that this result window can cover
+ * the reported request-pipeline depth, the default ImageReader delivery window, and a small
+ * callback-dispatch guard. A persistent mismatch still fails closed at the absolute metadata cap;
+ * no timestamp is silently evicted or synthesized.
  */
 class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private val maximumPendingEntries: Int = M10RawVideoLimits.DEFAULT_PAIR_ENTRIES,
+    private val maximumPendingResultEntries: Int = M10RawVideoLimits.MAX_PAIR_ENTRIES,
     maximumPendingImageBytes: Long? = null,
 ) : AutoCloseable {
     private val images = LinkedHashMap<Long, PendingImage>()
@@ -55,10 +66,12 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private var pendingImageBytes = 0L
     private var expectedRetainedFrameBytes: Long? = null
     private var resolvedMaximumPendingImageBytes: Long? = maximumPendingImageBytes
+    private var maximumObservedPipelineDepth = 0
     private var closed = false
 
     init {
         require(maximumPendingEntries in 1..M10RawVideoLimits.MAX_PAIR_ENTRIES)
+        require(maximumPendingResultEntries in 1..M10RawVideoLimits.MAX_PAIR_ENTRIES)
         require(maximumPendingImageBytes == null || maximumPendingImageBytes in 1..M10RawVideoLimits.MAX_RESIDENT_BYTES)
     }
 
@@ -102,13 +115,14 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
             runCatching { ownedEvidence.close() }
             close()
             throw IllegalStateException(
-                "M10 detached timestamp pairing exceeded the admitted pending-image byte budget",
+                "M10 detached timestamp pairing exceeded the admitted pending-image byte budget " +
+                    diagnostics(nextImageCount = images.size + 1, nextImageBytes = nextBytes),
             )
         }
 
         images[timestampNs] = PendingImage(ownedEvidence, retainedBytes)
         pendingImageBytes = nextBytes
-        enforceBound()
+        enforceImageEntryBound()
         return null
     }
 
@@ -118,13 +132,14 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         require(frameNumber >= 0L) { "M10 Camera2 frame number cannot be negative" }
         check(!closed) { "M10 timestamp pairer is closed" }
         require(!results.containsKey(timestampNs)) { "M10 duplicate capture-result timestamp $timestampNs" }
+        validateCamera2ResultWindow(result)
         val pendingImage = images.remove(timestampNs)
         if (pendingImage != null) {
             pendingImageBytes = Math.subtractExact(pendingImageBytes, pendingImage.retainedBytes)
             return PairedRawVideoSample(timestampNs, frameNumber, pendingImage.evidence, result)
         }
         results[timestampNs] = ResultRecord(frameNumber, result)
-        enforceBound()
+        enforceResultEntryBound()
         return null
     }
 
@@ -180,12 +195,74 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         }
     }
 
-    private fun enforceBound() {
-        if (images.size + results.size <= maximumPendingEntries) return
+    private fun validateCamera2ResultWindow(result: R) {
+        val captureResult = result as? CaptureResult ?: return
+        val reportedDepth = captureResult.get(CaptureResult.REQUEST_PIPELINE_DEPTH)?.toInt()?.and(0xFF) ?: return
+        if (reportedDepth <= 0) {
+            close()
+            throw IllegalStateException("M10 Camera2 reported a non-positive request-pipeline depth")
+        }
+        maximumObservedPipelineDepth = maxOf(maximumObservedPipelineDepth, reportedDepth)
+        val defaultImageReaderWindow = M10RawVideoLimits.DEFAULT_INGEST_QUEUE_FRAMES + IMAGE_READER_HEADROOM_FRAMES
+        val requiredWindow = try {
+            Math.addExact(
+                Math.addExact(maximumObservedPipelineDepth, defaultImageReaderWindow),
+                RESULT_CALLBACK_GUARD_FRAMES,
+            )
+        } catch (overflow: ArithmeticException) {
+            close()
+            throw IllegalStateException("M10 Camera2 result-window accounting overflowed", overflow)
+        }
+        if (requiredWindow > maximumPendingResultEntries) {
+            val detail = diagnostics()
+            close()
+            throw IllegalStateException(
+                "M10 Camera2 pipeline requires $requiredWindow pending result-metadata entries, " +
+                    "above the bounded cap $maximumPendingResultEntries $detail",
+            )
+        }
+    }
+
+    private fun enforceImageEntryBound() {
+        if (images.size <= maximumPendingEntries) return
+        val detail = diagnostics()
         close()
-        throw IllegalStateException("M10 timestamp pairing exceeded the bounded pending-entry budget")
+        throw IllegalStateException(
+            "M10 timestamp pairing exceeded the bounded detached-image entry budget " +
+                "limit=$maximumPendingEntries $detail",
+        )
+    }
+
+    private fun enforceResultEntryBound() {
+        if (results.size <= maximumPendingResultEntries) return
+        val detail = diagnostics()
+        close()
+        throw IllegalStateException(
+            "M10 timestamp pairing exceeded the bounded result-metadata entry budget " +
+                "limit=$maximumPendingResultEntries $detail",
+        )
+    }
+
+    private fun diagnostics(
+        nextImageCount: Int = images.size,
+        nextImageBytes: Long = pendingImageBytes,
+    ): String {
+        val imageRange = timestampRange(images.keys)
+        val resultRange = timestampRange(results.keys)
+        return "images=$nextImageCount results=${results.size} pendingImageBytes=$nextImageBytes " +
+            "pipelineDepth=$maximumObservedPipelineDepth imageTs=$imageRange resultTs=$resultRange"
+    }
+
+    private fun timestampRange(timestamps: Set<Long>): String {
+        if (timestamps.isEmpty()) return "none"
+        return "${timestamps.first()}..${timestamps.last()}"
     }
 
     private data class PendingImage(val evidence: AutoCloseable, val retainedBytes: Long)
     private data class ResultRecord<R>(val frameNumber: Long, val value: R)
+
+    private companion object {
+        const val IMAGE_READER_HEADROOM_FRAMES = 2
+        const val RESULT_CALLBACK_GUARD_FRAMES = 4
+    }
 }
