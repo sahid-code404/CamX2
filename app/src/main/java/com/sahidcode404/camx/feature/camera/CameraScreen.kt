@@ -43,6 +43,11 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.ui.components.StableSurfaceView
 import com.sahidcode404.camx.ui.design.CamXColors
 
+private enum class CameraCaptureMode {
+    PHOTO,
+    VIDEO,
+}
+
 @Composable
 fun CameraScreen(
     permissionGranted: Boolean,
@@ -52,6 +57,12 @@ fun CameraScreen(
     lensItems: List<CameraLensUiItem>,
     auxAudit: AuxHardwareAuditSnapshot = AuxHardwareAuditSnapshot(),
     inventoryStatus: LensInventoryStatus? = null,
+    photoCaptureEnabled: Boolean = false,
+    videoCaptureEnabled: Boolean = false,
+    captureBusy: Boolean = false,
+    captureMessage: String? = null,
+    onCapturePhoto: () -> Unit = {},
+    onToggleVideoRecording: () -> Unit = {},
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
     onDeepRescan: () -> Unit = {},
     onResetDiscoveryCache: () -> Unit = {},
@@ -60,9 +71,12 @@ fun CameraScreen(
     onOpenAppSettings: () -> Unit,
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
-    val captureContentDescription = stringResource(R.string.capture_unavailable_content_description)
+    val photoContentDescription = stringResource(R.string.capture_raw_photo_content_description)
+    val videoContentDescription = stringResource(R.string.capture_raw_video_content_description)
     val revealPreviewSurface = shouldRevealPreviewSurface(uiState, renderSpec)
     var showAuxAudit by remember { mutableStateOf(false) }
+    var captureMode by remember { mutableStateOf(CameraCaptureMode.PHOTO) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -117,11 +131,31 @@ fun CameraScreen(
                 Text("AUX Audit")
             }
 
+            captureMessage?.let { message ->
+                Text(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 244.dp),
+                    text = message,
+                    color = CamXColors.TextPrimary,
+                )
+            }
+
+            if (captureMode == CameraCaptureMode.VIDEO && !videoCaptureEnabled) {
+                Text(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 24.dp, end = 24.dp, bottom = 214.dp),
+                    text = stringResource(R.string.raw_video_m10_unavailable),
+                    color = CamXColors.TextSecondary,
+                )
+            }
+
             if (lensItems.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(start = 16.dp, end = 16.dp, bottom = 128.dp)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 164.dp)
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -136,22 +170,59 @@ fun CameraScreen(
                     }
                 }
             }
-        }
 
-        Button(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 44.dp)
-                .size(72.dp)
-                .semantics { contentDescription = captureContentDescription },
-            enabled = false,
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(
-                disabledContainerColor = Color.White.copy(alpha = 0.55f),
-            ),
-            onClick = {},
-        ) {
-            Box(modifier = Modifier.size(1.dp))
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 116.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ModeButton(
+                    label = stringResource(R.string.camera_mode_photo),
+                    selected = captureMode == CameraCaptureMode.PHOTO,
+                    onClick = { captureMode = CameraCaptureMode.PHOTO },
+                )
+                ModeButton(
+                    label = stringResource(R.string.camera_mode_video),
+                    selected = captureMode == CameraCaptureMode.VIDEO,
+                    onClick = { captureMode = CameraCaptureMode.VIDEO },
+                )
+            }
+
+            val captureEnabled = permissionGranted && !captureBusy && when (captureMode) {
+                CameraCaptureMode.PHOTO -> photoCaptureEnabled
+                CameraCaptureMode.VIDEO -> videoCaptureEnabled
+            }
+            val captureDescription = when (captureMode) {
+                CameraCaptureMode.PHOTO -> photoContentDescription
+                CameraCaptureMode.VIDEO -> videoContentDescription
+            }
+            val captureColor = when (captureMode) {
+                CameraCaptureMode.PHOTO -> Color.White
+                CameraCaptureMode.VIDEO -> Color.Red
+            }
+            Button(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+                    .size(72.dp)
+                    .semantics { contentDescription = captureDescription },
+                enabled = captureEnabled,
+                shape = CircleShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = captureColor,
+                    disabledContainerColor = captureColor.copy(alpha = 0.55f),
+                ),
+                onClick = {
+                    when (captureMode) {
+                        CameraCaptureMode.PHOTO -> onCapturePhoto()
+                        CameraCaptureMode.VIDEO -> onToggleVideoRecording()
+                    }
+                },
+            ) {
+                Box(modifier = Modifier.size(1.dp))
+            }
         }
 
         if (showAuxAudit) {
@@ -163,6 +234,20 @@ fun CameraScreen(
                 onResetDiscoveryCache = onResetDiscoveryCache,
             )
         }
+    }
+}
+
+@Composable
+private fun ModeButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick) {
+        Text(
+            text = label,
+            color = if (selected) CamXColors.TextPrimary else CamXColors.TextSecondary,
+        )
     }
 }
 
