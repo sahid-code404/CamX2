@@ -19,6 +19,48 @@ class RawVideoTimestampPairerTest {
     }
 
     @Test
+    fun resultMetadataSkewCanExceedDetachedImageEntryBudgetWithoutCrossCharging() {
+        val pairer = RawVideoTimestampPairer<TestImage, String>(
+            maximumPendingEntries = 2,
+            maximumPendingResultEntries = 16,
+        )
+
+        repeat(12) { index ->
+            val timestamp = 1_000L + index
+            assertEquals(null, pairer.offerResult(timestamp, index.toLong(), "r$index"))
+        }
+
+        assertEquals(0, pairer.pendingImageCount())
+        assertEquals(12, pairer.pendingResultCount())
+        repeat(12) { index ->
+            val timestamp = 1_000L + index
+            val pair = checkNotNull(pairer.offerImage(timestamp, TestImage()))
+            assertEquals(index.toLong(), pair.frameNumber)
+            assertEquals("r$index", pair.result)
+            pair.close()
+        }
+        assertEquals(0, pairer.pendingCount())
+    }
+
+    @Test
+    fun resultMetadataOverflowFailsClosedInsteadOfEvictingOldResults() {
+        val pairer = RawVideoTimestampPairer<TestImage, String>(
+            maximumPendingEntries = 2,
+            maximumPendingResultEntries = 3,
+        )
+        pairer.offerResult(1L, 1L, "r1")
+        pairer.offerResult(2L, 2L, "r2")
+        pairer.offerResult(3L, 3L, "r3")
+
+        val failure = runCatching { pairer.offerResult(4L, 4L, "r4") }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertTrue(failure?.message.orEmpty().contains("bounded result-metadata entry budget"))
+        assertTrue(failure?.message.orEmpty().contains("images=0 results=4"))
+        assertEquals(0, pairer.pendingCount())
+    }
+
+    @Test
     fun pendingOverflowClosesOwnedImagesAndFailsInsteadOfDropping() {
         val closes = AtomicInteger(0)
         val pairer = RawVideoTimestampPairer<TestImage, String>(maximumPendingEntries = 2)
@@ -26,6 +68,7 @@ class RawVideoTimestampPairerTest {
         pairer.offerImage(2L, TestImage(closes))
         val failure = runCatching { pairer.offerImage(3L, TestImage(closes)) }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
+        assertTrue(failure?.message.orEmpty().contains("bounded detached-image entry budget"))
         assertEquals(3, closes.get())
     }
 
