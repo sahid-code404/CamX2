@@ -46,6 +46,8 @@ object CxrbRecovery {
                 header = parseFileHeader(readExact(input, CxrbFormat.FILE_HEADER_BYTES, 0L), limits)
                 durableLength = CxrbFormat.FILE_HEADER_BYTES.toLong()
                 var previousSegmentOrdinal: ULong? = null
+                var nextGlobalOrdinal: FrameOrdinal? = null
+                var hasRecoveredSegment = false
 
                 while (input.filePointer < input.length()) {
                     if (recoveredSegments >= limits.maxSegments.toLong()) {
@@ -71,6 +73,20 @@ object CxrbRecovery {
                             )
                         }
                     }
+                    if (hasRecoveredSegment) {
+                        val expected = nextGlobalOrdinal ?: throw ParseFailure(
+                            CxrbRecoveryProblem.NON_MONOTONIC_ORDINAL,
+                            segmentStart,
+                            "No segment may follow a record that exhausted uint64 frame ordinals",
+                        )
+                        if (segmentHeader.epoch.firstOrdinal != expected) {
+                            throw ParseFailure(
+                                CxrbRecoveryProblem.NON_MONOTONIC_ORDINAL,
+                                segmentStart,
+                                "Segment begins at ${segmentHeader.epoch.firstOrdinal.value}, expected ${expected.value}; gaps must be explicit records",
+                            )
+                        }
+                    }
                     previousSegmentOrdinal = segmentHeader.epoch.segmentOrdinal
 
                     var expectedOrdinal: FrameOrdinal? = segmentHeader.epoch.firstOrdinal
@@ -87,15 +103,6 @@ object CxrbRecovery {
                                 CxrbRecoveryProblem.TRUNCATED_TAIL,
                                 recordOffset,
                                 "Segment ended without a durable checkpoint",
-                            )
-                        }
-                        if (recordCount >= limits.maxRecordsPerSegment.toLong() ||
-                            recordCount >= segmentHeader.maxRecords.toLong()
-                        ) {
-                            throw ParseFailure(
-                                CxrbRecoveryProblem.LIMIT_EXCEEDED,
-                                recordOffset,
-                                "Segment record count exceeds declared bounds",
                             )
                         }
 
@@ -145,8 +152,20 @@ object CxrbRecovery {
                             recoveredSegments += 1
                             recoveredFrames += frameCount
                             recoveredGaps += gapCount
+                            nextGlobalOrdinal = expectedOrdinal
+                            hasRecoveredSegment = true
                             checkpointFound = true
                             continue
+                        }
+
+                        if (recordCount >= limits.maxRecordsPerSegment.toLong() ||
+                            recordCount >= segmentHeader.maxRecords.toLong()
+                        ) {
+                            throw ParseFailure(
+                                CxrbRecoveryProblem.LIMIT_EXCEEDED,
+                                recordOffset,
+                                "Segment record count exceeds declared bounds",
+                            )
                         }
 
                         val magic = ByteBuffer.wrap(prefix, 0, Int.SIZE_BYTES)
