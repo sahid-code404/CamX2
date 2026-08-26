@@ -237,7 +237,7 @@ verify_elf() {
   local expected_exports
   case "$library" in
     libcamx_core.so)
-      expected_exports=$'Java_com_sahidcode404_camx_core_camera_diagnostics_NativeCore_nativeSnapshot\nJava_com_sahidcode404_camx_core_camera_discovery_NdkAdvertisedNativeBridge_nativeCollect\nJava_com_sahidcode404_camx_core_camera_discovery_NdkDeepNativeBridge_nativeCollectCandidates'
+      expected_exports=$'Java_com_sahidcode404_camx_core_camera_diagnostics_NativeCore_nativeSnapshot\nJava_com_sahidcode404_camx_core_camera_discovery_NdkAdvertisedNativeBridge_nativeCollect\nJava_com_sahidcode404_camx_core_camera_discovery_NdkDeepNativeBridge_nativeCollectCandidates\nJava_com_sahidcode404_camx_core_imaging_optimization_NativeSimdFusionCandidate_nativeFuseDense'
       ;;
     libandroidx.graphics.path.so)
       expected_exports='JNI_OnLoad'

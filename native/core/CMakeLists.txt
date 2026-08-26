@@ -15,6 +15,7 @@ add_library(camx_core SHARED
     src/discovery/ndk_advertised_metadata.cpp
     src/discovery/android_ndk_advertised_metadata.cpp
     src/buffer/native_buffer_pool.cpp
+    src/imaging/reconstruction_simd.cpp
     src/memory/android_owners_compile.cpp
     src/memory/resource_counters.cpp
     src/trace/native_trace_buffer.cpp

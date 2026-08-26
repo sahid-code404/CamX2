@@ -31,12 +31,15 @@ import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
+import com.sahidcode404.camx.core.camera.model.DisplayRotation
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.preview.GenerationSafePreviewSurfaceProvider
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceBinding
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
+import com.sahidcode404.camx.core.camera.raw.AndroidDngWriter
+import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
 import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
@@ -48,6 +51,10 @@ import com.sahidcode404.camx.core.camera.topology.NdkLevel2EvidenceSource
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameAuxDiscoveryOrchestrator
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameTopologyReconciler
 import com.sahidcode404.camx.core.camera.topology.ReconciliationCompletion
+import com.sahidcode404.camx.core.rawvideo.recording.AndroidSensorRawVideoStore
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStartOutcome
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStatus
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStopOutcome
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -70,6 +77,8 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val environment = runtimeEnvironmentFingerprint()
     private val controller = CameraSessionController(cameraManager)
+    private val dngWriter = AndroidDngWriter(appContext)
+    private val rawVideoStore = AndroidSensorRawVideoStore(appContext)
     private val seedDiscovery = AndroidFirstInstallSeedDiscovery(
         cameraManager = cameraManager,
         environment = environment,
@@ -115,6 +124,9 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     val topologyRepository = CameraTopologyRepository()
     val auxAudit: StateFlow<AuxHardwareAuditSnapshot> = mutableAuxAudit.asStateFlow()
     val lensInventoryStatus: StateFlow<LensInventoryStatus> = lensInventory.status
+    val photoCaptureAvailable: StateFlow<Boolean> = controller.rawPhotoAvailable
+    val videoCaptureAvailable: StateFlow<Boolean> = controller.rawVideoAvailable
+    val rawVideoStatus: StateFlow<SensorRawVideoStatus> = controller.rawVideoStatus
 
     private val auxDiscoveryOrchestrator = PostFirstFrameAuxDiscoveryOrchestrator(
         environment = environment,
@@ -308,6 +320,14 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
             auditTracker.changes.collect { refreshAudit() }
         }
     }
+
+    suspend fun capturePhoto(displayRotation: DisplayRotation): RawCaptureOutcome =
+        controller.captureRawDng(displayRotation, dngWriter)
+
+    suspend fun startRawVideo(displayRotation: DisplayRotation): SensorRawVideoStartOutcome =
+        controller.startRawVideo(displayRotation, rawVideoStore)
+
+    suspend fun stopRawVideo(): SensorRawVideoStopOutcome = controller.stopRawVideo()
 
     fun requestDeepRescan(): DeepRescanRequestResult {
         val result = deepRescanCoordinator.requestDeepRescan()
