@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     concurrency:
-      group: camx-validation-${{ github.ref }}
+      group: camx-validation-${{ github.ref }}-${{ github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read
