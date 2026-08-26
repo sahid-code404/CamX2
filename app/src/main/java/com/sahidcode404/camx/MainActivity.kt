@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -20,16 +21,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewGraph
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
 import com.sahidcode404.camx.core.camera.model.DisplayRotation
+import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
 import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModel
 import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModelFactory
 import com.sahidcode404.camx.feature.camera.CameraScreen
 import com.sahidcode404.camx.feature.update.DevelopmentUpdatesOverlay
 import com.sahidcode404.camx.ui.theme.CamXTheme
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private var cameraPermissionGranted by mutableStateOf(false)
@@ -49,18 +54,44 @@ class MainActivity : ComponentActivity() {
         setContent {
             CamXTheme(darkTheme = true) {
                 var requestCompleted by remember { mutableStateOf(cameraPermissionGranted) }
+                var storagePermissionGranted by remember { mutableStateOf(hasLegacyStoragePermission()) }
+                var pendingLegacyCapture by remember { mutableStateOf(false) }
+                var captureRequestNonce by remember { mutableStateOf(0) }
+                var captureBusy by remember { mutableStateOf(false) }
+                var captureMessage by remember { mutableStateOf<String?>(null) }
+
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
                 val lensItems by visiblePreviewGraph.coordinator.lensItems.collectAsState()
                 val auxAudit by visiblePreviewGraph.auxAudit.collectAsState()
                 val lensInventoryStatus by visiblePreviewGraph.lensInventoryStatus.collectAsState()
+                val photoCaptureAvailable by visiblePreviewGraph.photoCaptureAvailable.collectAsState()
                 val updateState by updateViewModel.state.collectAsState()
+
+                val captureBusyText = stringResource(R.string.capture_raw_busy)
+                val captureSavedText = stringResource(R.string.capture_raw_saved)
+                val captureCancelledText = stringResource(R.string.capture_raw_cancelled)
+                val captureFailedText = stringResource(R.string.capture_raw_failed)
+                val storagePermissionText = stringResource(R.string.capture_storage_permission_required)
+
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
                     cameraPermissionGranted = granted
                     requestCompleted = true
                     visiblePreviewGraph.coordinator.setPermission(granted)
+                }
+                val storagePermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    storagePermissionGranted = granted
+                    val shouldCapture = pendingLegacyCapture && granted
+                    pendingLegacyCapture = false
+                    if (shouldCapture) {
+                        captureRequestNonce += 1
+                    } else if (!granted) {
+                        captureMessage = storagePermissionText
+                    }
                 }
 
                 LaunchedEffect(Unit) {
@@ -70,6 +101,32 @@ class MainActivity : ComponentActivity() {
                     val preview = uiState as? VisiblePreviewUiState.Previewing
                     if (preview?.firstFrameVerified == true) {
                         updateViewModel.onFirstVerifiedFrame()
+                    }
+                }
+                LaunchedEffect(captureRequestNonce) {
+                    if (captureRequestNonce <= 0 || captureBusy) return@LaunchedEffect
+                    captureBusy = true
+                    captureMessage = captureBusyText
+                    try {
+                        captureMessage = when (
+                            visiblePreviewGraph.capturePhoto(currentDisplayRotation())
+                        ) {
+                            is RawCaptureOutcome.Saved -> captureSavedText
+                            is RawCaptureOutcome.Failed -> captureFailedText
+                            RawCaptureOutcome.Cancelled -> captureCancelledText
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        captureMessage = captureFailedText
+                    } finally {
+                        captureBusy = false
+                    }
+                }
+                LaunchedEffect(captureMessage, captureBusy) {
+                    if (captureMessage != null && !captureBusy) {
+                        delay(CAPTURE_MESSAGE_MILLIS)
+                        captureMessage = null
                     }
                 }
 
@@ -82,6 +139,21 @@ class MainActivity : ComponentActivity() {
                         lensItems = lensItems,
                         auxAudit = auxAudit,
                         inventoryStatus = lensInventoryStatus,
+                        photoCaptureEnabled = photoCaptureAvailable,
+                        videoCaptureEnabled = false,
+                        captureBusy = captureBusy,
+                        captureMessage = captureMessage,
+                        onCapturePhoto = {
+                            if (!captureBusy && photoCaptureAvailable) {
+                                if (requiresLegacyStoragePermission() && !storagePermissionGranted) {
+                                    pendingLegacyCapture = true
+                                    storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                } else {
+                                    captureRequestNonce += 1
+                                }
+                            }
+                        },
+                        onToggleVideoRecording = {},
                         onLensSelected = visiblePreviewGraph.coordinator::selectLens,
                         onDeepRescan = { visiblePreviewGraph.requestDeepRescan() },
                         onResetDiscoveryCache = visiblePreviewGraph::resetDiscoveryCache,
@@ -143,4 +215,16 @@ class MainActivity : ComponentActivity() {
         this,
         Manifest.permission.CAMERA,
     ) == PackageManager.PERMISSION_GRANTED
+
+    private fun requiresLegacyStoragePermission(): Boolean = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+
+    private fun hasLegacyStoragePermission(): Boolean = !requiresLegacyStoragePermission() ||
+        ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        ) == PackageManager.PERMISSION_GRANTED
+
+    private companion object {
+        const val CAPTURE_MESSAGE_MILLIS = 1_800L
+    }
 }
