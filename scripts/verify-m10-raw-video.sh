@@ -45,9 +45,13 @@ for token in \
   'DEFAULT_INGEST_QUEUE_FRAMES = 2' \
   'DEFAULT_MAX_RESIDENT_BYTES = 256L * 1024L * 1024L' \
   'defaultDetachedPairingBudget(canonicalBytesPerFrame' \
+  'val spoolQueueFrames: Int' \
   'val pairingPendingImageFrames: Int' \
   'val pairingPendingImageBytes: Long' \
+  'val reservedSpoolQueueBytes: Long' \
   'val reservedDetachedPairingBytes: Long' \
+  'spoolQueueFrames = ingestQueueFrames' \
+  'reservedSpoolQueueBytes = queueBytes' \
   'reservedDetachedPairingBytes = pairingBudget.reservedDetachedBytes' \
   'sealed interface SensorRawVideoStatus' \
   'sealed interface SensorRawVideoStartOutcome' \
@@ -124,6 +128,23 @@ for token in \
 done
 
 for token in \
+  'ArrayBlockingQueue<FrameBatch>(queueFrames)' \
+  'private data class FrameBatch(' \
+  'queue.offer(FrameBatch(gapBefore, frame))' \
+  'batch.gapBefore?.let(::appendGap)' \
+  'appendFrame(batch.frame)'; do
+  rg --fixed-strings --quiet "$token" "$spool" || {
+    echo "M10 full-frame spool bound missing: $token" >&2
+    exit 1
+  }
+done
+
+if rg --fixed-strings --quiet 'queueCapacityRecords' "$spool"; then
+  echo 'M10 spool queue must be bounded by full RAW frames, not a larger generic record count.' >&2
+  exit 1
+fi
+
+for token in \
   'AndroidSensorRawVideoStore(appContext)' \
   'controller.startRawVideo(displayRotation, rawVideoStore)' \
   'controller.stopRawVideo()'; do
@@ -144,10 +165,11 @@ for token in \
 done
 
 for token in \
-  'reservationProvesCanonicalQueueAndDetachedPairingBeforeCapture' \
-  'reservationFailsClosedWhenDetachedPendingAndInflightFramesCannotFit'; do
+  'reservationProvesBothFrameQueuesAndDetachedPairingBeforeCapture' \
+  'reservationFailsClosedWhenDetachedPendingAndInflightFramesCannotFit' \
+  'reservationFailsClosedWhenFrameQueuesCannotFitBudget'; do
   rg --fixed-strings --quiet "$token" "$reservation_test" || {
-    echo "M10 detached admission test missing: $token" >&2
+    echo "M10 detached/spool admission test missing: $token" >&2
     exit 1
   }
 done
@@ -188,5 +210,6 @@ rg --fixed-strings --quiet 'PACKED_NONE' "$spool"
 rg --fixed-strings --quiet 'Sensor RAW video is not physically certified by CI.' "$doc"
 rg --fixed-strings --quiet 'CameraSessionController remains the sole Camera2 owner.' "$doc"
 rg --fixed-strings --quiet 'detached pairing memory' "$doc"
+rg --fixed-strings --quiet 'spool queue' "$doc"
 
 echo 'M10 continuous sensor RAW-video acquisition and UI integration verification passed.'
