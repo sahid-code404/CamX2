@@ -38,6 +38,77 @@ data class SensorRawVideoProfile(
     }
 }
 
+internal data class DetachedPairingBudget(
+    val pendingImageFrames: Int,
+    val pendingImageBytes: Long,
+    val reservedDetachedBytes: Long,
+    val requiredResidentBytes: Long,
+)
+
+internal fun defaultDetachedPairingBudget(canonicalBytesPerFrame: Long): DetachedPairingBudget =
+    detachedPairingBudget(
+        canonicalBytesPerFrame = canonicalBytesPerFrame,
+        ingestQueueFrames = M10RawVideoLimits.DEFAULT_INGEST_QUEUE_FRAMES,
+        maxResidentBytes = M10RawVideoLimits.DEFAULT_MAX_RESIDENT_BYTES,
+    )
+
+private fun detachedPairingBudget(
+    canonicalBytesPerFrame: Long,
+    ingestQueueFrames: Int,
+    maxResidentBytes: Long,
+): DetachedPairingBudget {
+    val queueBytes = checkedMultiply(
+        canonicalBytesPerFrame,
+        ingestQueueFrames.toLong(),
+        "M10 ingest queue reservation overflow",
+    )
+    val fixedBytes = checkedAdd(
+        queueBytes,
+        M10RawVideoLimits.FIXED_SAFETY_MARGIN_BYTES,
+        "M10 resident reservation overflow",
+    )
+    require(fixedBytes < maxResidentBytes) {
+        "M10 resident budget cannot cover the bounded canonical ingest queue"
+    }
+
+    // One detached frame may be in-flight toward ingest while older image-before-result evidence
+    // remains in the timestamp-skew map. Reserve both states explicitly.
+    val detachedBudgetBytes = maxResidentBytes - fixedBytes
+    val detachedFrameCapacity = detachedBudgetBytes / canonicalBytesPerFrame
+    require(detachedFrameCapacity >= 2L) {
+        "M10 resident budget cannot cover one pending and one in-flight detached RAW frame"
+    }
+    val pendingImageFrames = min(
+        M10RawVideoLimits.DEFAULT_PAIR_ENTRIES.toLong(),
+        detachedFrameCapacity - 1L,
+    ).toInt()
+    require(pendingImageFrames >= 1)
+    val pendingImageBytes = checkedMultiply(
+        canonicalBytesPerFrame,
+        pendingImageFrames.toLong(),
+        "M10 timestamp-pairing reservation overflow",
+    )
+    val reservedDetachedBytes = checkedMultiply(
+        canonicalBytesPerFrame,
+        pendingImageFrames.toLong() + 1L,
+        "M10 detached pairing reservation overflow",
+    )
+    val requiredResidentBytes = checkedAdd(
+        fixedBytes,
+        reservedDetachedBytes,
+        "M10 resident reservation overflow",
+    )
+    check(requiredResidentBytes <= maxResidentBytes) {
+        "M10 detached pairing reservation exceeded the admitted resident budget"
+    }
+    return DetachedPairingBudget(
+        pendingImageFrames = pendingImageFrames,
+        pendingImageBytes = pendingImageBytes,
+        reservedDetachedBytes = reservedDetachedBytes,
+        requiredResidentBytes = requiredResidentBytes,
+    )
+}
+
 class SensorRawVideoReservation private constructor(
     val rawSize: IntSize,
     val canonicalBytesPerFrame: Long,
@@ -71,57 +142,18 @@ class SensorRawVideoReservation private constructor(
                 "M10 reference ingest requires one canonical frame addressable by a JVM byte array"
             }
             val queueBytes = checkedMultiply(frameBytes, ingestQueueFrames.toLong(), "M10 ingest queue reservation overflow")
-            val fixedBytes = checkedAdd(
-                queueBytes,
-                M10RawVideoLimits.FIXED_SAFETY_MARGIN_BYTES,
-                "M10 resident reservation overflow",
-            )
-            require(fixedBytes < maxResidentBytes) {
-                "M10 resident budget cannot cover the bounded canonical ingest queue"
-            }
-
-            // One detached frame may be in-flight toward ingest while older image-before-result
-            // evidence remains in the timestamp-skew map. Reserve both states explicitly.
-            val detachedBudgetBytes = maxResidentBytes - fixedBytes
-            val detachedFrameCapacity = detachedBudgetBytes / frameBytes
-            require(detachedFrameCapacity >= 2L) {
-                "M10 resident budget cannot cover one pending and one in-flight detached RAW frame"
-            }
-            val pairingPendingImageFrames = min(
-                M10RawVideoLimits.DEFAULT_PAIR_ENTRIES.toLong(),
-                detachedFrameCapacity - 1L,
-            ).toInt()
-            require(pairingPendingImageFrames >= 1)
-            val pairingPendingImageBytes = checkedMultiply(
-                frameBytes,
-                pairingPendingImageFrames.toLong(),
-                "M10 timestamp-pairing reservation overflow",
-            )
-            val reservedDetachedPairingBytes = checkedMultiply(
-                frameBytes,
-                pairingPendingImageFrames.toLong() + 1L,
-                "M10 detached pairing reservation overflow",
-            )
-            val required = checkedAdd(
-                fixedBytes,
-                reservedDetachedPairingBytes,
-                "M10 resident reservation overflow",
-            )
-            check(required <= maxResidentBytes) {
-                "M10 detached pairing reservation exceeded the admitted resident budget"
-            }
-
+            val pairingBudget = detachedPairingBudget(frameBytes, ingestQueueFrames, maxResidentBytes)
             val imageReaderMaxImages = checkedAddInt(ingestQueueFrames, 2, "M10 ImageReader bound overflow")
             return SensorRawVideoReservation(
                 rawSize = rawSize,
                 canonicalBytesPerFrame = frameBytes,
                 ingestQueueFrames = ingestQueueFrames,
                 imageReaderMaxImages = imageReaderMaxImages,
-                pairingPendingImageFrames = pairingPendingImageFrames,
-                pairingPendingImageBytes = pairingPendingImageBytes,
+                pairingPendingImageFrames = pairingBudget.pendingImageFrames,
+                pairingPendingImageBytes = pairingBudget.pendingImageBytes,
                 reservedCanonicalQueueBytes = queueBytes,
-                reservedDetachedPairingBytes = reservedDetachedPairingBytes,
-                requiredResidentBytes = required,
+                reservedDetachedPairingBytes = pairingBudget.reservedDetachedBytes,
+                requiredResidentBytes = pairingBudget.requiredResidentBytes,
                 maxResidentBytes = maxResidentBytes,
             )
         }
