@@ -21,8 +21,9 @@ class CxrbSensorRawVideoSpool(
     queueFrames: Int,
     private val segmentRecordLimit: Int = M10RawVideoLimits.DEFAULT_SEGMENT_RECORDS,
 ) : AutoCloseable {
-    private val queueCapacityRecords = Math.addExact(Math.multiplyExact(queueFrames, 2), 2)
-    private val queue = ArrayBlockingQueue<Record>(queueCapacityRecords)
+    // One queue slot owns at most one full RAW payload. A gap is tiny metadata attached to that
+    // frame rather than a second queue record, so queueFrames is also the exact full-frame bound.
+    private val queue = ArrayBlockingQueue<FrameBatch>(queueFrames)
     private val writer = CxrbReferenceWriter(outputFile, writerConfig)
     private val accepting = AtomicBoolean(true)
     private val finishing = AtomicBoolean(false)
@@ -42,10 +43,7 @@ class CxrbSensorRawVideoSpool(
     @Synchronized
     fun tryAppend(gapBefore: RawVideoGap?, frame: PackedNoneFrame): Boolean {
         if (!accepting.get() || failure.get() != null) return false
-        val required = if (gapBefore == null) 1 else 2
-        if (queue.remainingCapacity() < required) return false
-        if (gapBefore != null && !queue.offer(Record.Gap(gapBefore))) return false
-        if (!queue.offer(Record.Frame(frame))) return false
+        if (!queue.offer(FrameBatch(gapBefore, frame))) return false
         updateHighWater()
         return true
     }
@@ -113,53 +111,55 @@ class CxrbSensorRawVideoSpool(
             recordsInSegment = 0
         }
 
+        fun appendGap(value: RawVideoGap) {
+            if (!segmentOpen) begin(value.firstMissingOrdinal)
+            if (recordsInSegment >= segmentRecordLimit) {
+                commitIfOpen()
+                begin(value.firstMissingOrdinal)
+            }
+            writer.appendGap(value)
+            recordsInSegment += 1
+            gapCount += value.missingCount.toLongChecked()
+        }
+
+        fun appendFrame(value: PackedNoneFrame) {
+            val nextDescriptorSha = CanonicalRasterHasher.descriptorSha256(value.identity.representation)
+            if (!segmentOpen) {
+                descriptorSha = nextDescriptorSha
+                begin(value.frameOrdinal)
+            } else if (descriptorSha != null && descriptorSha != nextDescriptorSha) {
+                commitIfOpen()
+                representationEpoch += 1uL
+                descriptorSha = nextDescriptorSha
+                begin(value.frameOrdinal)
+            } else if (descriptorSha == null) {
+                descriptorSha = nextDescriptorSha
+            }
+            if (recordsInSegment >= segmentRecordLimit) {
+                commitIfOpen()
+                begin(value.frameOrdinal)
+            }
+            writer.appendFrame(value)
+            recordsInSegment += 1
+            frameCount += 1L
+            val ts = value.identity.timebase.imageTimestampNs
+            if (firstTimestamp == null) firstTimestamp = ts
+            lastTimestamp = ts
+        }
+
         try {
             while (!aborted.get()) {
-                val record = try {
+                val batch = try {
                     queue.poll(100L, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
                     null
                 }
-                if (record == null) {
+                if (batch == null) {
                     if (finishing.get() && queue.isEmpty()) break
                     continue
                 }
-                when (record) {
-                    is Record.Gap -> {
-                        if (!segmentOpen) begin(record.value.firstMissingOrdinal)
-                        if (recordsInSegment >= segmentRecordLimit) {
-                            commitIfOpen()
-                            begin(record.value.firstMissingOrdinal)
-                        }
-                        writer.appendGap(record.value)
-                        recordsInSegment += 1
-                        gapCount += record.value.missingCount.toLongChecked()
-                    }
-                    is Record.Frame -> {
-                        val nextDescriptorSha = CanonicalRasterHasher.descriptorSha256(record.value.identity.representation)
-                        if (!segmentOpen) {
-                            descriptorSha = nextDescriptorSha
-                            begin(record.value.frameOrdinal)
-                        } else if (descriptorSha != null && descriptorSha != nextDescriptorSha) {
-                            commitIfOpen()
-                            representationEpoch += 1uL
-                            descriptorSha = nextDescriptorSha
-                            begin(record.value.frameOrdinal)
-                        } else if (descriptorSha == null) {
-                            descriptorSha = nextDescriptorSha
-                        }
-                        if (recordsInSegment >= segmentRecordLimit) {
-                            commitIfOpen()
-                            begin(record.value.frameOrdinal)
-                        }
-                        writer.appendFrame(record.value)
-                        recordsInSegment += 1
-                        frameCount += 1L
-                        val ts = record.value.identity.timebase.imageTimestampNs
-                        if (firstTimestamp == null) firstTimestamp = ts
-                        lastTimestamp = ts
-                    }
-                }
+                batch.gapBefore?.let(::appendGap)
+                appendFrame(batch.frame)
                 if (recordsInSegment >= segmentRecordLimit) commitIfOpen()
             }
             if (!aborted.get()) {
@@ -186,17 +186,17 @@ class CxrbSensorRawVideoSpool(
     }
 
     private fun updateHighWater() {
-        val size = queue.size
+        val records = queue.sumOf { batch -> if (batch.gapBefore == null) 1 else 2 }
         while (true) {
             val previous = highWater.get()
-            if (size <= previous || highWater.compareAndSet(previous, size)) return
+            if (records <= previous || highWater.compareAndSet(previous, records)) return
         }
     }
 
-    private sealed interface Record {
-        data class Frame(val value: PackedNoneFrame) : Record
-        data class Gap(val value: RawVideoGap) : Record
-    }
+    private data class FrameBatch(
+        val gapBefore: RawVideoGap?,
+        val frame: PackedNoneFrame,
+    )
 }
 
 private fun ULong.toLongChecked(): Long {
