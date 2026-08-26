@@ -64,8 +64,9 @@ if rg --fixed-strings --quiet 'ArrayBlockingQueue<PairedRawVideoSample<Image, Ca
 fi
 
 for token in \
+  'private val images = LinkedHashMap<Long, AutoCloseable>()' \
   'DetachedRawSensorImage.copyAndClose(image)' \
-  'image is DetachedRawSensorImage'; do
+  'private fun detachImageReaderLease(image: I): AutoCloseable'; do
   rg --fixed-strings --quiet "$token" "$pairer" || {
     echo "M10 timestamp-pairing lease detachment missing: $token" >&2
     exit 1
@@ -75,9 +76,26 @@ done
 for token in \
   'class DetachedRawSensorImage' \
   'source.close()' \
-  'ByteBuffer.wrap(bytes).asReadOnlyBuffer()'; do
+  'fun takeCanonicalRaster(): ByteArray' \
+  'val canonical = ByteArray(canonicalBytesLong.toInt())'; do
   rg --fixed-strings --quiet "$token" "$detached" || {
-    echo "M10 detached RAW image contract missing: $token" >&2
+    echo "M10 detached RAW evidence contract missing: $token" >&2
+    exit 1
+  }
+done
+
+if rg --line-number ':\s*Image(\.Plane)?\s*\(' "$detached"; then
+  echo 'M10 detached evidence must not subclass framework Image or Image.Plane.' >&2
+  exit 1
+fi
+
+for token in \
+  'pair.takeDetachedRawSensorImage()' \
+  'evidence.takeCanonicalRaster()' \
+  'evidence.sourceRowStrideBytes' \
+  'evidence.sourcePixelStrideBytes'; do
+  rg --fixed-strings --quiet "$token" "$assembler" || {
+    echo "M10 detached assembler contract missing: $token" >&2
     exit 1
   }
 done
@@ -107,7 +125,7 @@ if rg --line-number 'acquireLatestImage\s*\(' "$owner" "$ingest" "$assembler"; t
   exit 1
 fi
 
-# CaptureResult is immutable evidence metadata and is allowed outside the owner. CameraDevice,
+# CaptureResult and Image evidence may cross the synchronous recording boundary, but CameraDevice,
 # CameraCaptureSession, CameraManager, and ImageReader remain prohibited in recording modules.
 if rg --line-number \
   '^import android\.hardware\.camera2\.(CameraDevice|CameraCaptureSession|CameraManager)|^import android\.media\.ImageReader' \
