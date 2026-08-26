@@ -72,7 +72,10 @@ if rg --line-number 'acquireLatestImage\s*\(' "$owner" "$ingest" "$assembler"; t
   exit 1
 fi
 
-if rg --line-number '^import android\.hardware\.camera2|^import android\.media\.ImageReader' \
+# CaptureResult is immutable evidence metadata and is allowed outside the owner. CameraDevice,
+# CameraCaptureSession, CameraManager, and ImageReader remain prohibited in recording modules.
+if rg --line-number \
+  '^import android\.hardware\.camera2\.(CameraDevice|CameraCaptureSession|CameraManager)|^import android\.media\.ImageReader' \
   "$model" "$pairer" "$assembler" "$ingest" "$spool" "$store"; then
   echo 'M10 recording modules must not become independent Camera2/ImageReader owners.' >&2
   exit 1
