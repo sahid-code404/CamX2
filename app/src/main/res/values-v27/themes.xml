@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.CamX" parent="Theme.CamX.Base">
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

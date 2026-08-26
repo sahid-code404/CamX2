@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">CamX</string>
+    <string name="architecture_foundation">Architecture foundation</string>
+    <string name="camera_permission_required">Camera permission is required for the viewfinder.</string>
+    <string name="open_app_settings">Open app settings</string>
+    <string name="camera_preview_content_description">Camera viewfinder</string>
+    <string name="capture_unavailable_content_description">Capture is unavailable in the visible preview checkpoint</string>
+    <string name="camera_preview_starting">Starting camera…</string>
+    <string name="camera_preview_waiting_surface">Preparing viewfinder…</string>
+    <string name="camera_preview_opening">Opening camera…</string>
+    <string name="camera_preview_waiting_first_frame">Waiting for first frame…</string>
+    <string name="camera_preview_no_camera">No usable camera route is available.</string>
+    <string name="camera_preview_capability_unavailable">Camera preview capabilities are unavailable.</string>
+    <string name="camera_preview_unsupported">No supported preview configuration is available.</string>
+    <string name="camera_preview_camera_error">Camera preview failed.</string>
+    <string name="camera_preview_startup_error">Camera startup failed.</string>
+    <string name="lens_status_advertised">Available</string>
+    <string name="lens_status_opening">Opening</string>
+    <string name="lens_status_verified">Verified</string>
+    <string name="lens_status_failed">Failed</string>
+    <string name="lens_content_description">%1$s lens, %2$s</string>
+</resources>

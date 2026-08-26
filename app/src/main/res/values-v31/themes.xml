@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.CamX.Splash" parent="Theme.CamX">
+        <item name="android:windowSplashScreenBackground">@color/camx_black</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/camx_graphite</item>
+    </style>
+</resources>

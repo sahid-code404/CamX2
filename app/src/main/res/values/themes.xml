@@ -1,0 +1,16 @@
+<resources>
+    <style name="Theme.CamX.Base" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/camx_black</item>
+        <item name="android:navigationBarColor">@color/camx_black</item>
+        <item name="android:windowBackground">@color/camx_black</item>
+    </style>
+
+    <style name="Theme.CamX" parent="Theme.CamX.Base" />
+
+    <style name="Theme.CamX.Splash" parent="Theme.CamX">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+</resources>
