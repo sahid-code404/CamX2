@@ -108,6 +108,9 @@ jobs:
       - name: Verify M1 immutable acquisition and source corpus
         run: ./scripts/verify-m1-acquisition.sh
 
+      - name: Verify M2A provisional RAW-video container
+        run: ./scripts/verify-m2a-container.sh
+
       - name: Run host native tests
         run: ./scripts/test-native.sh
 
