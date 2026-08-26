@@ -9,11 +9,11 @@ class DevelopmentNetworkPolicyTest {
     @Test
     fun endpointsAreFixedHttpsDevLatestAssets() {
         assertEquals(
-            "https://github.com/sahid-code404/CamX/releases/download/dev-latest/dev-manifest.json",
+            "https://github.com/sahid-code404/CamX2/releases/download/dev-latest/dev-manifest.json",
             DevOtaEndpoints.MANIFEST_URL,
         )
         assertEquals(
-            "https://github.com/sahid-code404/CamX/releases/download/dev-latest/CamX-dev.apk",
+            "https://github.com/sahid-code404/CamX2/releases/download/dev-latest/CamX-dev.apk",
             DevOtaEndpoints.APK_URL,
         )
         DevelopmentNetworkPolicy.requireAllowedHttps(URL(DevOtaEndpoints.MANIFEST_URL))
