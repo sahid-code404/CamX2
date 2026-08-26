@@ -135,7 +135,10 @@ jobs:
       - name: Verify M9 SIMD candidate and Vulkan gate
         run: bash ./scripts/verify-m9-optimization.sh
 
-      - name: Verify real photo shutter and truthful video UI
+      - name: Verify M10 continuous sensor RAW video
+        run: bash ./scripts/verify-m10-raw-video.sh
+
+      - name: Verify real photo and RAW-video camera controls
         run: bash ./scripts/verify-camera-capture-ui.sh
 
       - name: Run host native tests
