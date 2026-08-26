@@ -5,6 +5,7 @@ import com.sahidcode404.camx.core.camera.acquisition.IntRect
 import com.sahidcode404.camx.core.camera.acquisition.M1AcquisitionLimits
 import com.sahidcode404.camx.core.camera.model.IntSize
 import java.io.File
+import kotlin.math.min
 
 object M10RawVideoLimits {
     const val RAW_SENSOR_BYTES_PER_PIXEL = 2L
@@ -42,7 +43,10 @@ class SensorRawVideoReservation private constructor(
     val canonicalBytesPerFrame: Long,
     val ingestQueueFrames: Int,
     val imageReaderMaxImages: Int,
+    val pairingPendingImageFrames: Int,
+    val pairingPendingImageBytes: Long,
     val reservedCanonicalQueueBytes: Long,
+    val reservedDetachedPairingBytes: Long,
     val requiredResidentBytes: Long,
     val maxResidentBytes: Long,
 ) {
@@ -67,21 +71,56 @@ class SensorRawVideoReservation private constructor(
                 "M10 reference ingest requires one canonical frame addressable by a JVM byte array"
             }
             val queueBytes = checkedMultiply(frameBytes, ingestQueueFrames.toLong(), "M10 ingest queue reservation overflow")
-            val required = checkedAdd(
+            val fixedBytes = checkedAdd(
                 queueBytes,
                 M10RawVideoLimits.FIXED_SAFETY_MARGIN_BYTES,
                 "M10 resident reservation overflow",
             )
-            require(required <= maxResidentBytes) {
+            require(fixedBytes < maxResidentBytes) {
                 "M10 resident budget cannot cover the bounded canonical ingest queue"
             }
+
+            // One detached frame may be in-flight toward ingest while older image-before-result
+            // evidence remains in the timestamp-skew map. Reserve both states explicitly.
+            val detachedBudgetBytes = maxResidentBytes - fixedBytes
+            val detachedFrameCapacity = detachedBudgetBytes / frameBytes
+            require(detachedFrameCapacity >= 2L) {
+                "M10 resident budget cannot cover one pending and one in-flight detached RAW frame"
+            }
+            val pairingPendingImageFrames = min(
+                M10RawVideoLimits.DEFAULT_PAIR_ENTRIES.toLong(),
+                detachedFrameCapacity - 1L,
+            ).toInt()
+            require(pairingPendingImageFrames >= 1)
+            val pairingPendingImageBytes = checkedMultiply(
+                frameBytes,
+                pairingPendingImageFrames.toLong(),
+                "M10 timestamp-pairing reservation overflow",
+            )
+            val reservedDetachedPairingBytes = checkedMultiply(
+                frameBytes,
+                pairingPendingImageFrames.toLong() + 1L,
+                "M10 detached pairing reservation overflow",
+            )
+            val required = checkedAdd(
+                fixedBytes,
+                reservedDetachedPairingBytes,
+                "M10 resident reservation overflow",
+            )
+            check(required <= maxResidentBytes) {
+                "M10 detached pairing reservation exceeded the admitted resident budget"
+            }
+
             val imageReaderMaxImages = checkedAddInt(ingestQueueFrames, 2, "M10 ImageReader bound overflow")
             return SensorRawVideoReservation(
                 rawSize = rawSize,
                 canonicalBytesPerFrame = frameBytes,
                 ingestQueueFrames = ingestQueueFrames,
                 imageReaderMaxImages = imageReaderMaxImages,
+                pairingPendingImageFrames = pairingPendingImageFrames,
+                pairingPendingImageBytes = pairingPendingImageBytes,
                 reservedCanonicalQueueBytes = queueBytes,
+                reservedDetachedPairingBytes = reservedDetachedPairingBytes,
                 requiredResidentBytes = required,
                 maxResidentBytes = maxResidentBytes,
             )
