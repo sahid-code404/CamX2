@@ -1,0 +1,70 @@
+name: Import CAMX-108 baseline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/import-camx108.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: camx2-import-camx108
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CamX2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone accepted CAMX-108 source baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/sahid-code404/CamX.git /tmp/camx-source
+          git -C /tmp/camx-source checkout --detach 75f56063cd34f802fe1e404574b496412ba3955c
+
+      - name: Replace non-workflow repository contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/' \
+            /tmp/camx-source/ "$GITHUB_WORKSPACE/"
+
+      - name: Record accepted source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > CAMX2_BASELINE.md <<'EOF'
+          # CamX2 accepted baseline
+
+          CamX2 is based on the accepted CAMX-108 working frontier used by the computational RAW Architecture Revision 2.
+
+          - Source repository: `sahid-code404/CamX`
+          - Source branch: `phase/camx-108-one-shot-raw`
+          - Source commit: `75f56063cd34f802fe1e404574b496412ba3955c`
+          - Migration rule: preserve the working camera, AUX-lens, preview, one-shot RAW, OTA, diagnostics, cache, topology, and resource-ownership behavior while layering the EvidenceConstrainedImagingEngine architecture on top.
+          - Sole Camera2 authority remains `CameraSessionController`.
+          EOF
+
+      - name: Commit accepted CAMX-108 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No import changes required.'
+            exit 0
+          fi
+          git commit -m 'Import accepted CAMX-108 working baseline'
+          git push origin HEAD:main
