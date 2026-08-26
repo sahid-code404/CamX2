@@ -1,0 +1,170 @@
+name: CamX CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "rewrite/**"
+      - "phase/**"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Architecture, tests, native, lint, and signed APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: camx-validation-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    env:
+      CAMX_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CAMX_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI: "true"
+
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.CAMX_SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact checked-out source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CAMX_SOURCE_SHA"
+          echo "CamX CI source SHA: $CAMX_SOURCE_SHA"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          dependency-graph: disabled
+
+      - name: Install architecture guard tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
+
+      - name: Install pinned Android SDK, NDK, and CMake
+        run: ./scripts/install-android-sdk.sh
+
+      - name: Resolve reproducible development identity
+        run: |
+          set -euo pipefail
+          version_code=$((1000000 + GITHUB_RUN_NUMBER))
+          test "$version_code" -le 2100000000
+          short_sha="${CAMX_SOURCE_SHA:0:12}"
+          commit_epoch="$(git show -s --format=%ct "$CAMX_SOURCE_SHA")"
+          commit_timestamp="$(date --utc --date="@$commit_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+          changelog="$(git log -1 --pretty=%s "$CAMX_SOURCE_SHA")"
+          echo "DEV_OTA_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+          echo "DEV_OTA_VERSION_NAME=0.1.0-dev.${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
+          echo "CAMX_BUILD_TIMESTAMP_UTC=$commit_timestamp" >> "$GITHUB_ENV"
+          echo "CAMX_CHANGELOG=$changelog" >> "$GITHUB_ENV"
+
+      - name: Verify whitespace
+        run: ./scripts/verify-whitespace.sh
+
+      - name: Verify universality
+        run: ./scripts/verify-universality.sh
+
+      - name: Verify sole camera owner
+        run: ./scripts/verify-camera-owner.sh
+
+      - name: Verify no background components
+        run: ./scripts/verify-no-services.sh
+
+      - name: Verify camera hot paths
+        run: ./scripts/verify-hot-paths.sh
+
+      - name: Verify native boundaries
+        run: ./scripts/verify-native-boundaries.sh
+
+      - name: Verify resource ownership
+        run: ./scripts/verify-resource-ownership.sh
+
+      - name: Verify development OTA contract
+        run: ./scripts/verify-development-ota.sh
+
+      - name: Verify architecture document and type inventory
+        run: ./scripts/verify-architecture.sh
+
+      - name: Run host native tests
+        run: ./scripts/test-native.sh
+
+      - name: Test API-23 model, unit tests, lint, build JNI for all ABIs, and assemble dev OTA
+        run: |
+          ./gradlew --no-daemon --stacktrace \
+            :app:verifyApi23Baseline :app:testDebugUnitTest :app:lintDevOta :app:assembleDevOta \
+            -PdevOtaVersionCode="$DEV_OTA_VERSION_CODE" \
+            -PdevOtaVersionName="$DEV_OTA_VERSION_NAME"
+
+      - name: Report exact unit-test count
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sys
+          import xml.etree.ElementTree as ET
+
+          files = sorted(glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml"))
+          if not files:
+              raise SystemExit("No testDebugUnitTest JUnit XML reports were produced")
+          totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+          for path in files:
+              root = ET.parse(path).getroot()
+              for key in totals:
+                  totals[key] += int(root.attrib.get(key, "0"))
+          print(
+              "CamX unit tests: "
+              f"tests={totals['tests']} failures={totals['failures']} "
+              f"errors={totals['errors']} skipped={totals['skipped']}"
+          )
+          if totals["failures"] or totals["errors"]:
+              sys.exit(1)
+          PY
+
+      - name: Verify packaged native API-23 load boundary
+        run: |
+          apk="$(find app/build/outputs/apk/devOta -type f -name '*.apk' | head -n 1)"
+          test -f "$apk"
+          ./scripts/verify-native-api23.sh "$apk"
+
+      - name: Package and verify signed development OTA
+        run: |
+          apk="$(find app/build/outputs/apk/devOta -type f -name '*.apk' | head -n 1)"
+          test -f "$apk"
+          ./scripts/package-dev-ota.sh "$apk" artifacts-dev-ota "$CAMX_SOURCE_SHA"
+          ./scripts/verify-packaged-ota.sh artifacts-dev-ota
+
+      - name: Upload verified development artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CamX-dev-ota-${{ env.CAMX_SOURCE_SHA }}
+          path: artifacts-dev-ota/
+          if-no-files-found: error
+          retention-days: 21
+
+  publish_dev_ota:
+    name: Publish green development OTA
+    if: ${{ github.event_name == 'push' }}
+    needs: validate
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/dev-ota.yml
+    with:
+      source_sha: ${{ github.sha }}
+      source_run_id: ${{ github.run_id }}
