@@ -48,6 +48,39 @@ class CxrbReferenceWriterTest {
     }
 
     @Test
+    fun segmentAtExactRecordLimitCanCheckpointAndRecover() {
+        val file = temporaryFolder.newFile("exact-limit.cxrb")
+        CxrbReferenceWriter(file, m2aWriterConfig(maxSegmentRecords = 2)).use { writer ->
+            writer.beginSegment(CxrbSegmentEpoch(0uL, 0uL, 0uL, FrameOrdinal(0uL)))
+            writer.appendFrame(m2aFrame(0uL))
+            writer.appendFrame(m2aFrame(1uL))
+            writer.commitSegment()
+        }
+        val report = CxrbRecovery.inspect(file)
+        assertTrue(report.isFullyValid)
+        assertEquals(1L, report.segmentsRecovered)
+        assertEquals(2L, report.framesRecovered)
+        assertEquals(FrameOrdinal(1uL), report.lastCheckpoint?.lastOrdinal)
+    }
+
+    @Test
+    fun writerRejectsCrossSegmentSilentOrdinalGap() {
+        val file = temporaryFolder.newFile("cross-segment-gap.cxrb")
+        CxrbReferenceWriter(file, m2aWriterConfig()).use { writer ->
+            writer.beginSegment(CxrbSegmentEpoch(0uL, 0uL, 0uL, FrameOrdinal(0uL)))
+            writer.appendFrame(m2aFrame(0uL))
+            writer.commitSegment()
+            assertThrows(IllegalArgumentException::class.java) {
+                writer.beginSegment(CxrbSegmentEpoch(1uL, 0uL, 0uL, FrameOrdinal(2uL)))
+            }
+        }
+        val report = CxrbRecovery.inspect(file)
+        assertTrue(report.isFullyValid)
+        assertEquals(1L, report.segmentsRecovered)
+        assertEquals(FrameOrdinal(0uL), report.lastCheckpoint?.lastOrdinal)
+    }
+
+    @Test
     fun normalCloseDropsUncheckpointedTail() {
         val file = temporaryFolder.newFile("cancel.cxrb")
         lateinit var firstCheckpoint: CxrbCheckpoint
