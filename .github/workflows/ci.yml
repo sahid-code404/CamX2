@@ -111,6 +111,9 @@ jobs:
       - name: Verify M2A provisional RAW-video container
         run: ./scripts/verify-m2a-container.sh
 
+      - name: Verify real photo shutter and truthful video UI
+        run: bash ./scripts/verify-camera-capture-ui.sh
+
       - name: Run host native tests
         run: ./scripts/test-native.sh
 
