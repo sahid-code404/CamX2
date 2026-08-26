@@ -53,7 +53,13 @@ done
 
 for token in \
   'suspend fun capturePhoto(displayRotation: DisplayRotation)' \
-  'controller.captureRawDng(displayRotation, dngWriter)'; do
+  'controller.captureRawDng(displayRotation, dngWriter)' \
+  'val videoCaptureAvailable: StateFlow<Boolean> = controller.rawVideoAvailable' \
+  'val rawVideoStatus: StateFlow<SensorRawVideoStatus> = controller.rawVideoStatus' \
+  'suspend fun startRawVideo(displayRotation: DisplayRotation)' \
+  'controller.startRawVideo(displayRotation, rawVideoStore)' \
+  'suspend fun stopRawVideo()' \
+  'controller.stopRawVideo()'; do
   rg --fixed-strings --quiet "$token" "$graph" || {
     echo "Visible preview capture bridge missing: $token" >&2
     exit 1
@@ -62,20 +68,34 @@ done
 
 for token in \
   'visiblePreviewGraph.capturePhoto(currentDisplayRotation())' \
-  'photoCaptureEnabled = photoCaptureAvailable' \
-  'videoCaptureEnabled = false'; do
+  'visiblePreviewGraph.startRawVideo(currentDisplayRotation())' \
+  'visiblePreviewGraph.stopRawVideo()' \
+  'photoCaptureEnabled = photoCaptureAvailable && !videoRecording' \
+  'videoCaptureEnabled = videoUiEnabled' \
+  'videoRecording = videoRecording'; do
   rg --fixed-strings --quiet "$token" "$activity" || {
     echo "MainActivity real capture wiring missing: $token" >&2
     exit 1
   }
 done
 
+if rg --fixed-strings --quiet 'videoCaptureEnabled = false' "$activity"; then
+  echo 'M10 is wired: MainActivity must not hard-disable the RAW-video shutter.' >&2
+  exit 1
+fi
+if rg --fixed-strings --quiet 'onToggleVideoRecording = {}' "$activity"; then
+  echo 'M10 is wired: the RAW-video callback must not be a no-op.' >&2
+  exit 1
+fi
+
 for token in \
   'CameraCaptureMode.PHOTO' \
   'CameraCaptureMode.VIDEO' \
   'CameraCaptureMode.PHOTO -> onCapturePhoto()' \
   'CameraCaptureMode.VIDEO -> onToggleVideoRecording()' \
-  'raw_video_m10_unavailable'; do
+  'stop_raw_video_content_description' \
+  'RawRecordingTimer(' \
+  'raw_video_unavailable'; do
   rg --fixed-strings --quiet "$token" "$screen" || {
     echo "Camera mode/shutter UI contract missing: $token" >&2
     exit 1
@@ -87,4 +107,4 @@ if rg --multiline --pcre2 --quiet 'enabled\s*=\s*false,[\s\S]{0,250}onClick\s*=\
   exit 1
 fi
 
-echo 'Real photo shutter and truthful RAW-video UI verification passed.'
+echo 'Real photo and M10 sensor-RAW-video camera UI verification passed.'
