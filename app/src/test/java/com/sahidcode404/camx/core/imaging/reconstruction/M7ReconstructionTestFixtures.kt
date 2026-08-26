@@ -27,14 +27,31 @@ import com.sahidcode404.camx.core.imaging.calibration.CalibrationOrigin
 import com.sahidcode404.camx.core.imaging.calibration.CalibrationReservation
 import com.sahidcode404.camx.core.imaging.calibration.CfaDoubleQuad
 import com.sahidcode404.camx.core.imaging.calibration.CfaNoiseModel
+import com.sahidcode404.camx.core.imaging.calibration.ColorMatrixCalibration
+import com.sahidcode404.camx.core.imaging.calibration.ColorMatrixEntry
 import com.sahidcode404.camx.core.imaging.calibration.M5CalibrationProfile
+import com.sahidcode404.camx.core.imaging.calibration.Matrix3x3
 import com.sahidcode404.camx.core.imaging.calibration.NoiseParameters
 import com.sahidcode404.camx.core.imaging.calibration.ReferenceCalibrationEngine
+import com.sahidcode404.camx.core.imaging.calibration.ReferenceIlluminant
 
 internal object M7ReconstructionTestFixtures {
     val size = IntSize(8, 8)
     private val lens = CanonicalLensFingerprint("m7-lens")
     private val profileFingerprint = CameraProfileFingerprint("m7-profile")
+
+    fun identityColorCalibration(): ColorMatrixCalibration = ColorMatrixCalibration(
+        listOf(
+            ColorMatrixEntry(
+                illuminant = ReferenceIlluminant(21, "D65"),
+                sensorToXyz = Matrix3x3(
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ),
+            ),
+        ),
+    )
 
     fun truthValues(): IntArray = IntArray(size.width * size.height) { index ->
         val x = index % size.width
@@ -47,25 +64,25 @@ internal object M7ReconstructionTestFixtures {
         exposureTimesNs: List<Long?> = List(offsets.size) { 5_000_000L },
         sensitivityIso: List<Int?> = List(offsets.size) { 100 },
         mutations: Map<Pair<Int, Int>, Int> = emptyMap(),
+        colorCalibration: ColorMatrixCalibration? = null,
     ): CalibratedMeasurementFrameSet {
         require(offsets.size >= 2)
         require(exposureTimesNs.size == offsets.size && sensitivityIso.size == offsets.size)
         val truth = truthValues()
         val rasters = offsets.mapIndexed { ordinal, offset ->
             IntArray(truth.size) { index ->
-                val x = index % size.width
-                val y = index / size.width
                 mutations[ordinal to index] ?: (truth[index] + offset)
             }
         }
-        return measurements(rasters, exposureTimesNs, sensitivityIso)
+        return measurements(rasters, exposureTimesNs, sensitivityIso, colorCalibration)
     }
 
     fun measurementsFromRasters(
         rasters: List<IntArray>,
         exposureTimesNs: List<Long?> = List(rasters.size) { 5_000_000L },
         sensitivityIso: List<Int?> = List(rasters.size) { 100 },
-    ): CalibratedMeasurementFrameSet = measurements(rasters, exposureTimesNs, sensitivityIso)
+        colorCalibration: ColorMatrixCalibration? = null,
+    ): CalibratedMeasurementFrameSet = measurements(rasters, exposureTimesNs, sensitivityIso, colorCalibration)
 
     fun align(measurements: CalibratedMeasurementFrameSet): AlignmentEvidenceSet {
         val request = AlignmentRequest(
@@ -129,6 +146,7 @@ internal object M7ReconstructionTestFixtures {
         rasters: List<IntArray>,
         exposureTimesNs: List<Long?>,
         sensitivityIso: List<Int?>,
+        colorCalibration: ColorMatrixCalibration?,
     ): CalibratedMeasurementFrameSet {
         require(rasters.size in M4BurstLimits.MIN_FRAMES..M4BurstLimits.MAX_FRAMES)
         require(rasters.all { it.size == size.width * size.height })
@@ -188,7 +206,7 @@ internal object M7ReconstructionTestFixtures {
             blackLevelsDn = CfaDoubleQuad(0.0, 0.0, 0.0, 0.0),
             whiteLevelsDn = CfaDoubleQuad(4095.0, 4095.0, 4095.0, 4095.0),
             noiseModel = CfaNoiseModel(noise, noise, noise, noise),
-            colorCalibration = null,
+            colorCalibration = colorCalibration,
             confidence = CalibrationConfidenceVector(
                 blackLevel = 1.0,
                 whiteLevel = 1.0,
@@ -196,7 +214,7 @@ internal object M7ReconstructionTestFixtures {
                 shotNoise = 1.0,
                 readNoise = 1.0,
                 fixedPatternNoise = 1.0,
-                colorCalibration = null,
+                colorCalibration = colorCalibration?.let { 1.0 },
             ),
             origin = CalibrationOrigin.PROFILED_CORPUS,
         )

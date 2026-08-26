@@ -11,14 +11,14 @@ The semantic architecture is accepted independently of these technologies. A can
 | `PACKED_NONE` | FROZEN baseline | Mandatory reversible admission path; not optional |
 | DngCreator for matched sensor-domain cases | NEEDS PHYSICAL PROOF | M8A per-profile metadata/raster/decoder validation |
 | packed RAW through DNG tooling | PROVISIONAL / NEEDS PROTOTYPE | Independent unpack/CFA/metadata cohort |
-| exact `ComputationalDngWriter` implementation | NEEDS PROTOTYPE | M8B SDK-versus-narrow-direct-writer security/interoperability experiment |
+| exact `ComputationalDngWriter` implementation | PROVISIONAL / NARROW DIRECT FLOAT-CFA REFERENCE IMPLEMENTED / EXTERNAL DECODER EVIDENCE PENDING | M8B named-decoder matrix, real exact-profile calibration/source evidence, security review, and comparison against pinned/pruned SDK or standards-neutral master where useful |
 | computational DNG interoperability | NEEDS PHYSICAL PROOF | Real source/calibration and named decoder matrix |
-| OpenEXR/internal computational master fallback | PROVISIONAL | M8B truthful master-format decision |
+| OpenEXR/internal computational master fallback | PROVISIONAL | M8B truthful master-format decision, especially for future `LinearSceneRgb` products |
 | SIMD providers | NEEDS PROTOTYPE + PHYSICAL PROOF | M9 differential correctness and measured device benefit |
 | Vulkan providers | NEEDS PROTOTYPE + PHYSICAL PROOF | M9 feature/driver/API/correctness/performance/energy proof |
 | direct AHardwareBuffer ingest | NEEDS PROTOTYPE + PHYSICAL PROOF | API-26+ format/import/copy/energy evidence; never API-23 assumption |
 | segment/tile/checkpoint dimensions | PROVISIONAL | container/codec/resource measurements |
-| float precision profiles | PROVISIONAL | numerical error, uncertainty, storage, and interoperability proof |
+| float precision profiles | PROVISIONAL / M8B FLOAT32 CFA REFERENCE USES THIS PROFILE | numerical error, uncertainty, storage, and named-decoder interoperability proof |
 | separate compute process | PROVISIONAL FUTURE TIER-A | IPC/lifecycle/death/GPU/API-23 prototype; must preserve zero Camera2 imports |
 | background execution mechanism | PROVISIONAL | separate Android lifecycle/product-policy ADR |
 | sustained sensor-RAW-video ownership extension | NEEDS TIER-A DESIGN + PHYSICAL PROOF | M10 extension through sole controller, without second camera engine |

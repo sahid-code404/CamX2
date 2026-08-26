@@ -129,6 +129,9 @@ jobs:
       - name: Verify M7 computational photo reconstruction
         run: bash ./scripts/verify-m7-reconstruction.sh
 
+      - name: Verify M8B computational DNG/interchange
+        run: bash ./scripts/verify-m8b-interchange.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
