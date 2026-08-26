@@ -70,6 +70,7 @@ import com.sahidcode404.camx.core.camera.raw.RawTimestampPairer
 import com.sahidcode404.camx.core.camera.runtime.CameraGenerationGate
 import com.sahidcode404.camx.core.camera.trace.BoundedCameraStartupTrace
 import com.sahidcode404.camx.core.rawvideo.recording.AndroidSensorRawVideoIngest
+import com.sahidcode404.camx.core.rawvideo.recording.DetachedRawVideoPair
 import com.sahidcode404.camx.core.rawvideo.recording.CxrbSensorRawVideoSpool
 import com.sahidcode404.camx.core.rawvideo.recording.M10RawVideoLimits
 import com.sahidcode404.camx.core.rawvideo.recording.RawVideoTimestampPairer
@@ -1719,6 +1720,8 @@ class CameraSessionController private constructor(
         private val session: CameraCaptureSession,
         private val reader: ImageReader,
         private val pairer: RawVideoTimestampPairer<Image, CaptureResult>,
+        private val imageCallbackHandler: Handler,
+        private val imageCallbackThread: HandlerThread,
         private val sequenceId: Int,
         private val sequenceCompleted: CompletableDeferred<Long>,
     ) {
@@ -1726,24 +1729,50 @@ class CameraSessionController private constructor(
 
         suspend fun stopAndDrain(timeoutMillis: Long) {
             if (stopped.compareAndSet(false, true)) session.stopRepeating()
-            withTimeout(timeoutMillis) { sequenceCompleted.await() }
-            withTimeout(timeoutMillis) {
-                while (pairer.pendingCount() != 0) delay(5L)
+            try {
+                withTimeout(timeoutMillis) { sequenceCompleted.await() }
+                drainImageCallbacks(timeoutMillis)
+                withTimeout(timeoutMillis) {
+                    while (pairer.pendingCount() != 0) delay(5L)
+                }
+            } finally {
+                closeImageCallbacks()
+                pairer.close()
             }
-            reader.setOnImageAvailableListener(null, null)
-            pairer.close()
         }
 
         fun abort() {
             if (stopped.compareAndSet(false, true)) runCatching { session.stopRepeating() }
             runCatching { session.abortCaptures() }
-            reader.setOnImageAvailableListener(null, null)
+            runCatching { reader.setOnImageAvailableListener(null, null) }
+            imageCallbackThread.quitSafely()
+            if (Thread.currentThread() !== imageCallbackThread) {
+                runCatching { imageCallbackThread.join(M10RawVideoLimits.WORKER_JOIN_TIMEOUT_MILLIS) }
+            }
             pairer.close()
             sequenceCompleted.cancel(CancellationException("M10 RAW-video stream aborted"))
         }
 
         fun completeSequence(completedSequenceId: Int, frameNumber: Long) {
             if (completedSequenceId == sequenceId) sequenceCompleted.complete(frameNumber)
+        }
+
+        private suspend fun drainImageCallbacks(timeoutMillis: Long) {
+            runCatching { reader.setOnImageAvailableListener(null, null) }
+            val drained = CompletableDeferred<Unit>()
+            val posted = runCatching {
+                imageCallbackHandler.post { drained.complete(Unit) }
+            }.getOrDefault(false)
+            if (!posted) drained.complete(Unit)
+            withTimeout(timeoutMillis) { drained.await() }
+        }
+
+        private suspend fun closeImageCallbacks() {
+            runCatching { reader.setOnImageAvailableListener(null, null) }
+            imageCallbackThread.quitSafely()
+            withContext(Dispatchers.IO) {
+                imageCallbackThread.join(M10RawVideoLimits.WORKER_JOIN_TIMEOUT_MILLIS)
+            }
         }
     }
 
@@ -2026,30 +2055,46 @@ class CameraSessionController private constructor(
             val pairer = RawVideoTimestampPairer<Image, CaptureResult>(M10RawVideoLimits.DEFAULT_PAIR_ENTRIES)
             val completion = CompletableDeferred<Long>()
             val fatal = AtomicBoolean(false)
-            lateinit var stream: AndroidRawVideoStream
+            val imageCallbackThread = HandlerThread("camx-raw-video-images").apply { start() }
+            val imageCallbackHandler = Handler(imageCallbackThread.looper)
+            var stream: AndroidRawVideoStream? = null
+
             fun fail(error: Throwable) {
                 if (!fatal.compareAndSet(false, true)) return
+                runCatching { resources.reader.setOnImageAvailableListener(null, null) }
+                imageCallbackThread.quitSafely()
                 pairer.close()
+                if (!completion.isCompleted) completion.completeExceptionally(error)
                 onFatal(error)
             }
+
             fun publish(pair: com.sahidcode404.camx.core.rawvideo.recording.PairedRawVideoSample<Image, CaptureResult>?) {
-                if (pair != null && !ingest.offer(pair)) {
+                if (pair != null && !ingest.offer(DetachedRawVideoPair.from(pair))) {
                     fail(RawCapturePlatformException("M10 bounded ingest rejected a paired RAW frame"))
                 }
             }
-            resources.reader.setOnImageAvailableListener(
-                { source ->
-                    while (true) {
-                        val image = try { source.acquireNextImage() } catch (error: Throwable) { fail(error); break } ?: break
-                        try {
-                            publish(pairer.offerImage(image.timestamp, image))
-                        } catch (error: Throwable) {
-                            image.close(); fail(error); break
-                        }
-                    }
-                }, callbackHandler,
-            )
+
             try {
+                resources.reader.setOnImageAvailableListener(
+                    { source ->
+                        while (true) {
+                            val image = try {
+                                source.acquireNextImage()
+                            } catch (error: Throwable) {
+                                fail(error)
+                                break
+                            } ?: break
+                            try {
+                                publish(pairer.offerImage(image.timestamp, image))
+                            } catch (error: Throwable) {
+                                runCatching { image.close() }
+                                fail(error)
+                                break
+                            }
+                        }
+                    },
+                    imageCallbackHandler,
+                )
                 val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                     addTarget(previewSurface)
                     addTarget(resources.rawSurface)
@@ -2064,23 +2109,51 @@ class CameraSessionController private constructor(
                             }
                             try { publish(pairer.offerResult(timestamp, result.frameNumber, result)) } catch (error: Throwable) { fail(error) }
                         }
+
                         override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
-                            fail(RawCapturePlatformException("M10 RAW-video capture failed reason=${failure.reason} sequence=${failure.sequenceId}"))
-                        }
-                        override fun onCaptureSequenceCompleted(session: CameraCaptureSession, sequenceId: Int, frameNumber: Long) {
-                            stream.completeSequence(sequenceId, frameNumber)
-                        }
-                        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
-                            if (!completion.isCompleted) completion.completeExceptionally(
-                                RawCapturePlatformException("M10 RAW-video sequence $sequenceId was aborted"),
+                            fail(
+                                RawCapturePlatformException(
+                                    "M10 RAW-video capture failed reason=" + failure.reason + " sequence=" + failure.sequenceId,
+                                ),
                             )
                         }
-                    }, callbackHandler,
+
+                        override fun onCaptureSequenceCompleted(session: CameraCaptureSession, sequenceId: Int, frameNumber: Long) {
+                            val current = stream
+                            if (current != null) {
+                                current.completeSequence(sequenceId, frameNumber)
+                            } else if (!completion.isCompleted) {
+                                completion.complete(frameNumber)
+                            }
+                        }
+
+                        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+                            if (!completion.isCompleted) {
+                                completion.completeExceptionally(
+                                    RawCapturePlatformException("M10 RAW-video sequence " + sequenceId + " was aborted"),
+                                )
+                            }
+                        }
+                    },
+                    callbackHandler,
                 )
-                stream = AndroidRawVideoStream(session, resources.reader, pairer, sequenceId, completion)
-                return stream
+                val created = AndroidRawVideoStream(
+                    session = session,
+                    reader = resources.reader,
+                    pairer = pairer,
+                    imageCallbackHandler = imageCallbackHandler,
+                    imageCallbackThread = imageCallbackThread,
+                    sequenceId = sequenceId,
+                    sequenceCompleted = completion,
+                )
+                stream = created
+                return created
             } catch (failure: Throwable) {
-                resources.reader.setOnImageAvailableListener(null, null)
+                runCatching { resources.reader.setOnImageAvailableListener(null, null) }
+                imageCallbackThread.quitSafely()
+                if (Thread.currentThread() !== imageCallbackThread) {
+                    runCatching { imageCallbackThread.join(M10RawVideoLimits.WORKER_JOIN_TIMEOUT_MILLIS) }
+                }
                 pairer.close()
                 throw failure
             }

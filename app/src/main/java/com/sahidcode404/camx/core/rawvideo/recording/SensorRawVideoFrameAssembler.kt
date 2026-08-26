@@ -1,7 +1,6 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
 import android.hardware.camera2.CaptureResult
-import android.media.Image
 import android.media.ImageFormat
 import com.sahidcode404.camx.core.camera.acquisition.AcquisitionPlaneDescriptor
 import com.sahidcode404.camx.core.camera.acquisition.AcquisitionSourceApi
@@ -39,7 +38,7 @@ internal class SensorRawVideoFrameAssembler(
     init { require(providerEpoch > 0L) }
 
     fun assemble(
-        pair: PairedRawVideoSample<Image, CaptureResult>,
+        pair: DetachedRawVideoPair,
         hostTimestampNs: Long,
     ): SensorRawVideoFrameBatch {
         require(hostTimestampNs > 0L)

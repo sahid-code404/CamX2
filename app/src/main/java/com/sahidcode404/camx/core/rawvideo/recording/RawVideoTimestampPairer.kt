@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
+import android.hardware.camera2.CaptureResult
 import android.media.Image
 import java.util.LinkedHashMap
 
@@ -19,6 +20,50 @@ class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
         val value = image
         image = null
         value?.close()
+    }
+}
+
+/**
+ * Heap-only handoff for the asynchronous ingest queue. The ImageReader lease has already been
+ * detached by RawVideoTimestampPairer before this object is created.
+ */
+internal class DetachedRawVideoPair private constructor(
+    val timestampNs: Long,
+    val frameNumber: Long,
+    private var image: DetachedRawSensorImage?,
+    val result: CaptureResult,
+) : AutoCloseable {
+    fun takeImage(): DetachedRawSensorImage {
+        val value = checkNotNull(image) { "M10 detached RAW image ownership already moved" }
+        image = null
+        return value
+    }
+
+    override fun close() {
+        val value = image
+        image = null
+        value?.close()
+    }
+
+    companion object {
+        fun from(pair: PairedRawVideoSample<Image, CaptureResult>): DetachedRawVideoPair {
+            val image = pair.takeImage()
+            return try {
+                val detached = image as? DetachedRawSensorImage
+                    ?: throw IllegalArgumentException("M10 paired RAW image escaped without detachment")
+                DetachedRawVideoPair(
+                    timestampNs = pair.timestampNs,
+                    frameNumber = pair.frameNumber,
+                    image = detached,
+                    result = pair.result,
+                )
+            } catch (error: Throwable) {
+                runCatching { image.close() }
+                throw error
+            } finally {
+                pair.close()
+            }
+        }
     }
 }
 

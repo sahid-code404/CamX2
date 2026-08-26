@@ -9,8 +9,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Heap-backed snapshot of one public RAW_SENSOR Image.
  *
  * M10 must not retain ImageReader-owned Image leases while waiting for the matching CaptureResult.
- * This class copies the complete declared RAW plane before closing the source Image, while preserving
- * the Image surface expected by the existing exact-timestamp assembler. The snapshot is not tied to
+ * This class copies the declared RAW plane extent before closing the source Image, while preserving the
+ * Image surface expected by the existing exact-timestamp assembler. The snapshot is not tied to
  * ImageReader/native buffers and therefore does not consume ImageReader.maxImages ownership.
  */
 internal class DetachedRawSensorImage private constructor(
@@ -69,9 +69,30 @@ internal class DetachedRawSensorImage private constructor(
                 val sourcePlanes = source.planes
                 require(sourcePlanes.size == 1) { "M10 public RAW_SENSOR detachment requires exactly one plane" }
                 val planes = sourcePlanes.map { plane ->
-                    require(plane.rowStride > 0 && plane.pixelStride > 0)
+                    val meaningfulRowBytes = Math.multiplyExact(
+                        source.width.toLong(),
+                        M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL,
+                    )
+                    require(plane.pixelStride == M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
+                        "M10 RAW_SENSOR pixel stride is not the public 16-bit unpacked layout"
+                    }
+                    require(plane.rowStride >= meaningfulRowBytes) {
+                        "M10 RAW_SENSOR row stride is smaller than a meaningful row"
+                    }
+                    require(meaningfulRowBytes <= Int.MAX_VALUE.toLong())
+                    val sourceRequiredBytes = Math.addExact(
+                        Math.multiplyExact((source.height - 1).toLong(), plane.rowStride.toLong()),
+                        meaningfulRowBytes,
+                    )
+                    require(sourceRequiredBytes <= Int.MAX_VALUE.toLong()) {
+                        "M10 RAW source extent cannot be represented by a JVM byte array"
+                    }
                     val sourceBuffer = plane.buffer.duplicate().apply { clear() }
-                    val bytes = ByteArray(sourceBuffer.remaining())
+                    require(sourceRequiredBytes <= sourceBuffer.remaining().toLong()) {
+                        "M10 RAW source buffer is shorter than its declared row layout"
+                    }
+                    sourceBuffer.limit(sourceRequiredBytes.toInt())
+                    val bytes = ByteArray(sourceRequiredBytes.toInt())
                     sourceBuffer.get(bytes)
                     DetachedPlane(plane.rowStride, plane.pixelStride, bytes)
                 }.toTypedArray<Image.Plane>()

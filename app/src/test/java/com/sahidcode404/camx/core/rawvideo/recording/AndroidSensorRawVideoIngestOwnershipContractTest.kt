@@ -7,23 +7,24 @@ import org.junit.Test
 
 class AndroidSensorRawVideoIngestOwnershipContractTest {
     @Test
-    fun `ingest queue never retains Camera2 Image ownership`() {
+    fun ingestQueueNeverRetainsCamera2ImageOwnership() {
         val source = source("src/main/java/com/sahidcode404/camx/core/rawvideo/recording/AndroidSensorRawVideoIngest.kt")
 
         assertTrue(
             source.contains(
-                "ArrayBlockingQueue<SensorRawVideoFrameBatch>(reservation.ingestQueueFrames)",
+                "ArrayBlockingQueue<DetachedRawVideoPair>(reservation.ingestQueueFrames)",
             ),
         )
+        assertTrue(source.contains("DetachedRawVideoPair.from(pair)"))
         assertTrue(source.contains("assembler.assemble("))
-        assertTrue(source.indexOf("assembler.assemble(") < source.indexOf("queue.offer("))
+        assertTrue(source.indexOf("queue.offer(") < source.indexOf("assembler.assemble("))
         assertFalse(source.contains("ArrayBlockingQueue<PairedRawVideoSample<Image, CaptureResult>>"))
-        assertFalse(source.contains("queue.forEach { it.close() }"))
+        assertTrue(source.contains("runCatching { pair.close() }"))
     }
 
     private fun source(relative: String): String {
-        val candidates = listOf(File(relative), File("app/$relative"))
+        val candidates = listOf(File(relative), File("app/" + relative))
         return candidates.firstOrNull(File::isFile)?.readText()
-            ?: error("Source file not found: $relative from ${System.getProperty("user.dir")}")
+            ?: error("Source file not found: " + relative + " from " + System.getProperty("user.dir"))
     }
 }

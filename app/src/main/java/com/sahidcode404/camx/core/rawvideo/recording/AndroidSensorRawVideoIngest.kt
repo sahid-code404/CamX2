@@ -1,7 +1,5 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
-import android.hardware.camera2.CaptureResult
-import android.media.Image
 import android.os.SystemClock
 import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import java.util.concurrent.ArrayBlockingQueue
@@ -12,13 +10,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 
 /**
- * Bounded ownership bridge from exact timestamp pairs to immutable canonical CXRB packets.
+ * Bounded ownership bridge from detached timestamp pairs to immutable canonical CXRB packets.
  *
- * A Camera2 Image must never sit in the asynchronous ingest queue. The canonical copy is made
- * synchronously when the exact image/result pair arrives, and SensorRawVideoFrameAssembler closes
- * the Image in its finally block before this method returns. Only detached immutable frame batches
- * are allowed to wait behind storage backpressure. This keeps ImageReader maxImages as a short
- * pairing-skew bound instead of accidentally turning it into the storage queue depth.
+ * A Camera2 Image must never sit in the asynchronous ingest queue. The pairer first copies the
+ * declared RAW plane extent and closes the ImageReader lease; only heap-backed DetachedRawVideoPair
+ * values can wait behind storage backpressure. Canonicalization and hashing run on the ingest worker,
+ * so a large RAW frame cannot stall the Camera2 result callback while the queue is full.
  */
 internal class AndroidSensorRawVideoIngest(
     context: RawCaptureContext,
@@ -29,7 +26,7 @@ internal class AndroidSensorRawVideoIngest(
     private val onFatal: (Throwable) -> Unit,
 ) : AutoCloseable {
     private val assembler = SensorRawVideoFrameAssembler(context, providerEpoch, profile)
-    private val queue = ArrayBlockingQueue<SensorRawVideoFrameBatch>(reservation.ingestQueueFrames)
+    private val queue = ArrayBlockingQueue<DetachedRawVideoPair>(reservation.ingestQueueFrames)
     private val accepting = AtomicBoolean(true)
     private val finishing = AtomicBoolean(false)
     private val failed = AtomicBoolean(false)
@@ -40,38 +37,30 @@ internal class AndroidSensorRawVideoIngest(
         start()
     }
 
-    fun offer(pair: PairedRawVideoSample<Image, CaptureResult>): Boolean {
+    fun offer(pair: DetachedRawVideoPair): Boolean {
         if (!accepting.get()) {
             pair.close()
             return false
         }
 
-        // Detach from ImageReader ownership before any queue wait. assemble() always closes pair/image.
-        val batch = try {
-            assembler.assemble(
-                pair,
-                SystemClock.elapsedRealtimeNanos().coerceAtLeast(1L),
-            )
-        } catch (error: Throwable) {
-            fail(error)
-            return false
-        }
-
-        if (!accepting.get()) return false
         val accepted = try {
             queue.offer(
-                batch,
+                pair,
                 M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS,
                 TimeUnit.MILLISECONDS,
             )
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
+        } catch (error: Throwable) {
+            pair.close()
+            fail(error)
+            return false
         }
         if (!accepted) {
+            pair.close()
             fail(
                 IllegalStateException(
-                    "M10 canonical ingest queue remained saturated after ${M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS} ms of bounded backpressure; recording stopped instead of dropping RAW evidence",
+                    "M10 canonical ingest queue remained saturated after " +
+                        M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS +
+                        " ms of bounded backpressure; recording stopped instead of dropping RAW evidence",
                 ),
             )
             return false
@@ -97,7 +86,7 @@ internal class AndroidSensorRawVideoIngest(
     fun abort(deleteOutput: Boolean) {
         accepting.set(false)
         finishing.set(true)
-        queue.clear()
+        closeQueuedPairs()
         worker.interrupt()
         spool.abort(deleteOutput)
         runCatching { worker.join(M10RawVideoLimits.WORKER_JOIN_TIMEOUT_MILLIS) }
@@ -108,14 +97,23 @@ internal class AndroidSensorRawVideoIngest(
     private fun runWorker() {
         try {
             while (true) {
-                val batch = try {
+                val pair = try {
                     queue.poll(100L, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
                     null
                 }
-                if (batch == null) {
+                if (pair == null) {
                     if (finishing.get() && queue.isEmpty()) break
                     continue
+                }
+                val batch = try {
+                    assembler.assemble(
+                        pair,
+                        SystemClock.elapsedRealtimeNanos().coerceAtLeast(1L),
+                    )
+                } catch (error: Throwable) {
+                    fail(error)
+                    break
                 }
                 if (!spool.tryAppend(batch.gapBefore, batch.frame)) {
                     fail(IllegalStateException("M10 CXRB spool queue saturated; recording stopped instead of dropping a RAW frame"))
@@ -126,7 +124,14 @@ internal class AndroidSensorRawVideoIngest(
         } catch (error: Throwable) {
             fail(error)
         } finally {
-            queue.clear()
+            closeQueuedPairs()
+        }
+    }
+
+    private fun closeQueuedPairs() {
+        while (true) {
+            val pair = queue.poll() ?: return
+            runCatching { pair.close() }
         }
     }
 

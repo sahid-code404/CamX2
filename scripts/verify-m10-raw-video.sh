@@ -37,6 +37,16 @@ for token in \
 done
 
 for token in \
+  'HandlerThread("camx-raw-video-images")' \
+  'imageCallbackHandler' \
+  'imageCallbackThread'; do
+  rg --fixed-strings --quiet "$token" "$owner" || {
+    echo "M10 dedicated image callback handler contract missing: $token" >&2
+    exit 1
+  }
+done
+
+for token in \
   'DEFAULT_INGEST_QUEUE_FRAMES = 2' \
   'DEFAULT_MAX_RESIDENT_BYTES = 256L * 1024L * 1024L' \
   'sealed interface SensorRawVideoStatus' \
@@ -49,7 +59,8 @@ for token in \
 done
 
 for token in \
-  'ArrayBlockingQueue<SensorRawVideoFrameBatch>(reservation.ingestQueueFrames)' \
+  'ArrayBlockingQueue<DetachedRawVideoPair>(reservation.ingestQueueFrames)' \
+  'DetachedRawVideoPair.from(pair)' \
   'assembler.assemble(' \
   'queue.offer(' ; do
   rg --fixed-strings --quiet "$token" "$ingest" || {
@@ -65,7 +76,9 @@ fi
 
 for token in \
   'DetachedRawSensorImage.copyAndClose(image)' \
-  'image is DetachedRawSensorImage'; do
+  'image is DetachedRawSensorImage' \
+  'class DetachedRawVideoPair' \
+  'DetachedRawVideoPair.from(pair)'; do
   rg --fixed-strings --quiet "$token" "$pairer" || {
     echo "M10 timestamp-pairing lease detachment missing: $token" >&2
     exit 1
@@ -74,6 +87,8 @@ done
 
 for token in \
   'class DetachedRawSensorImage' \
+  'sourceRequiredBytes' \
+  'sourceBuffer.limit(sourceRequiredBytes.toInt())' \
   'source.close()' \
   'ByteBuffer.wrap(bytes).asReadOnlyBuffer()'; do
   rg --fixed-strings --quiet "$token" "$detached" || {
