@@ -1,6 +1,6 @@
 # M10 — Continuous Sensor RAW Video Acquisition
 
-Status: software checkpoint implemented on `phase/camx2-m10-sensor-raw-video`; the exact-device `ImageReader.maxImages` lease fix is being validated on `phase/camx2-m10-image-lease-fix`.
+Status: software checkpoint implemented on `phase/camx2-m10-sensor-raw-video`; exact-device RAW-video ownership and timestamp-skew fixes are being validated on `phase/camx2-m10-image-lease-fix`.
 
 ## Scope
 
@@ -20,6 +20,8 @@ Each RAW image is paired to its Camera2 result through the positive `SENSOR_TIME
 
 A native `ImageReader` lease is never allowed to become timestamp-skew or storage-queue state. When an image arrives before its matching capture result, M10 first copies the complete declared RAW plane into detached heap-backed evidence and closes the source `Image`; timestamp pairing then owns only the detached snapshot. The copy respects the `Image.Plane` ByteBuffer's current position and limit rather than assuming the valid RAW window starts at absolute buffer offset zero. Once a pair exists, canonicalization produces detached immutable frame evidence before asynchronous spool backpressure. This makes `ImageReader.maxImages` a short Camera2 delivery bound rather than a hidden buffering mechanism and directly prevents result-callback skew from exhausting acquired-image slots. The CI M10 guard checks this lease-detachment boundary so future queue changes cannot silently reintroduce native-image retention.
 
+Continuous Camera2 callback skew is intentionally asymmetric. Detached RAW images are large evidence objects, so unmatched image-before-result state is constrained by both a small image-entry limit and the admitted resident-byte budget. `TotalCaptureResult` values are lightweight metadata and can legitimately arrive farther ahead of `ImageReader` delivery, so unmatched result-before-image state has a separate bounded metadata window rather than sharing the detached-image counter. Production result admission checks Camera2's reported `REQUEST_PIPELINE_DEPTH` against that metadata cap with room for the default `ImageReader` delivery window and a fixed callback-dispatch guard. The absolute metadata cap remains finite. If timestamps remain unmatched until that cap is exceeded, recording fails closed with image/result counts, retained-image bytes, pipeline depth, and timestamp ranges; no result or image is silently evicted and exact `SENSOR_TIMESTAMP` matching is not weakened.
+
 The recording transaction has explicit start, recording, stopping, completed, failed, and idle states. Start is not reported as successful until the first RAW frame is verified. Stop drains the bounded pipeline, finalizes the container, releases RAW resources, and restores preview through the existing session-generation machinery.
 
 ## `ImageReader.maxImages` regression acceptance
@@ -34,11 +36,11 @@ M10 reserves the canonical ingest queue, the full-frame CXRB spool queue, and de
 
 The spool queue is bounded in frame batches rather than generic records: one queue slot can own at most one full `PackedNoneFrame` payload, with any preceding gap stored as small metadata in the same batch. This prevents a record-count queue from retaining more full RAW payloads than the admission model reserved.
 
-The pairer enforces the admitted pending-image byte ceiling at runtime as well as its entry-count ceiling. A change in detached RAW frame byte extent inside one recording epoch, retained-byte accounting overflow, or exceeding the admitted byte budget is fatal to the recording; evidence is closed rather than evicted or silently dropped. The default pairer derives its byte ceiling from the same admission formula used by `SensorRawVideoReservation`, so the asynchronous timestamp-skew state and the pre-capture resource proof cannot silently diverge.
+The pairer enforces the admitted pending-image byte ceiling at runtime as well as its detached-image entry ceiling. A change in detached RAW frame byte extent inside one recording epoch, retained-byte accounting overflow, or exceeding the admitted byte budget is fatal to the recording; evidence is closed rather than evicted or silently dropped. The default pairer derives its byte ceiling from the same admission formula used by `SensorRawVideoReservation`, so the asynchronous timestamp-skew state and the pre-capture resource proof cannot silently diverge. Result metadata has its own finite entry ceiling and is never cross-charged against the much more expensive detached-image entry budget.
 
 The default ingest queue is intentionally small and bounded. The Camera2 callback path may wait for a short bounded interval when that queue is temporarily full; this is explicit backpressure, not silent frame dropping. If capacity does not recover within that interval, recording fails rather than discarding sensor evidence.
 
-Queue overflow, source-shape divergence, malformed timestamps, storage failure, and other evidence-integrity failures stop/fail the transaction instead of silently discarding sensor frames.
+Queue overflow, source-shape divergence, malformed timestamps, storage failure, persistent timestamp mismatch, and other evidence-integrity failures stop/fail the transaction instead of silently discarding sensor frames.
 
 The Android storage factory writes a new `.cxrb` file under the app external-files Movies directory (or app-private fallback when external app storage is unavailable). It reserves free space before creating a transaction and does not request broad media-storage permission.
 
