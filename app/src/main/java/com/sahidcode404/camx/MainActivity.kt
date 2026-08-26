@@ -38,6 +38,7 @@ import com.sahidcode404.camx.feature.camera.CameraScreen
 import com.sahidcode404.camx.feature.update.DevelopmentUpdatesOverlay
 import com.sahidcode404.camx.ui.theme.CamXTheme
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
                 val rawVideoStoppingText = stringResource(R.string.raw_video_stopping)
                 val rawVideoCancelledText = stringResource(R.string.raw_video_cancelled)
                 val rawVideoNotRecordingText = stringResource(R.string.raw_video_not_recording)
+                val rawVideoStartTimeoutText = stringResource(R.string.raw_video_start_timeout)
 
                 val videoRecording = rawVideoStatus is SensorRawVideoStatus.Recording
                 val recordingStartedElapsedRealtimeNs =
@@ -122,6 +124,10 @@ class MainActivity : ComponentActivity() {
                     if (preview?.firstFrameVerified == true) {
                         updateViewModel.onFirstVerifiedFrame()
                     }
+                }
+                LaunchedEffect(rawVideoStatus) {
+                    val failure = rawVideoStatus as? SensorRawVideoStatus.Failed ?: return@LaunchedEffect
+                    captureMessage = getString(R.string.raw_video_failed, failure.reason)
                 }
                 LaunchedEffect(captureRequestNonce) {
                     if (captureRequestNonce <= 0 || captureBusy || videoRecording) return@LaunchedEffect
@@ -208,10 +214,20 @@ class MainActivity : ComponentActivity() {
                                                         R.string.raw_video_failed,
                                                         outcome.reason,
                                                     )
-                                                    SensorRawVideoStartOutcome.Cancelled -> rawVideoCancelledText
+                                                    SensorRawVideoStartOutcome.Cancelled -> {
+                                                        when (val terminal = visiblePreviewGraph.rawVideoStatus.value) {
+                                                            is SensorRawVideoStatus.Failed -> getString(
+                                                                R.string.raw_video_failed,
+                                                                terminal.reason,
+                                                            )
+                                                            else -> rawVideoCancelledText
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                    } catch (_: TimeoutCancellationException) {
+                                        captureMessage = getString(R.string.raw_video_failed, rawVideoStartTimeoutText)
                                     } catch (cancelled: CancellationException) {
                                         throw cancelled
                                     } catch (failure: Throwable) {
