@@ -34,8 +34,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rsync -a --delete --exclude='.git/' /tmp/camx-source/ "$GITHUB_WORKSPACE/"
-          rm -rf "$GITHUB_WORKSPACE/.github/workflows/bootstrap-from-camx.yml"
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/' \
+            /tmp/camx-source/ "$GITHUB_WORKSPACE/"
 
       - name: Record source provenance
         shell: bash
