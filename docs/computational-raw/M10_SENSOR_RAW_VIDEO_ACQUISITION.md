@@ -22,7 +22,9 @@ The recording transaction has explicit start, recording, stopping, completed, fa
 
 ## Admission, memory, and storage
 
-M10 reserves the canonical ingest queue before starting acquisition. The default queue is intentionally small and bounded. Queue overflow, source-shape divergence, malformed timestamps, storage failure, and other evidence-integrity failures stop/fail the transaction instead of silently discarding sensor frames.
+M10 reserves the canonical ingest queue before starting acquisition. The default queue is intentionally small and bounded. The Camera2 callback path may wait for a short bounded interval when that queue is temporarily full; this is explicit backpressure, not silent frame dropping. If capacity does not recover within that interval, recording fails rather than discarding sensor evidence.
+
+Queue overflow, source-shape divergence, malformed timestamps, storage failure, and other evidence-integrity failures stop/fail the transaction instead of silently discarding sensor frames.
 
 The Android storage factory writes a new `.cxrb` file under the app external-files Movies directory (or app-private fallback when external app storage is unavailable). It reserves free space before creating a transaction and does not request broad media-storage permission.
 
@@ -32,7 +34,7 @@ The current reference spool uses mandatory `PACKED_NONE`. The CXRB container rem
 
 The Camera screen now exposes a real VIDEO shutter rather than a placeholder. The shutter is enabled only when the active verified logical route can attempt public RAW video. Pressing it starts the M10 transaction. While recording, the control becomes a stop control, shows a recording timer, disables lens switching/PHOTO capture, and pressing it again drains and finalizes the RAW file.
 
-If the active route cannot support the public RAW_SENSOR requirements, VIDEO remains visible but disabled with an explicit availability message.
+If the active route cannot support the public RAW_SENSOR requirements, VIDEO remains visible but disabled with an explicit availability message. Runtime RAW-video failures are surfaced with their concrete pipeline reason rather than being hidden behind a generic cancellation message. A start timeout is also reported explicitly.
 
 ## Failure/lifecycle behavior
 
