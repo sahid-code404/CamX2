@@ -3,6 +3,10 @@ package com.sahidcode404.camx.core.rawvideo.recording
 import android.media.Image
 import java.util.LinkedHashMap
 
+internal interface RetainedByteEvidence : AutoCloseable {
+    val retainedByteCount: Long
+}
+
 /**
  * One exact timestamp pair.
  *
@@ -38,17 +42,21 @@ class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
  * Android ImageReader Images are special-cased at this synchronous ownership boundary: the
  * meaningful RAW raster is copied to DetachedRawSensorImage and the native Image is closed before
  * the timestamp-skew map can retain it. Unmatched callback ordering therefore cannot consume
- * ImageReader.maxImages slots.
+ * ImageReader.maxImages slots. Detached image evidence is also byte-bounded by the M10 admission
+ * reservation so releasing native leases cannot create an unaccounted heap buffer.
  */
 class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private val maximumPendingEntries: Int = M10RawVideoLimits.DEFAULT_PAIR_ENTRIES,
+    private val maximumPendingImageBytes: Long = M10RawVideoLimits.MAX_RESIDENT_BYTES,
 ) : AutoCloseable {
-    private val images = LinkedHashMap<Long, AutoCloseable>()
+    private val images = LinkedHashMap<Long, PendingImage>()
     private val results = LinkedHashMap<Long, ResultRecord<R>>()
+    private var pendingImageBytes = 0L
     private var closed = false
 
     init {
         require(maximumPendingEntries in 1..M10RawVideoLimits.MAX_PAIR_ENTRIES)
+        require(maximumPendingImageBytes in 1..M10RawVideoLimits.MAX_RESIDENT_BYTES)
     }
 
     @Synchronized
@@ -71,7 +79,25 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         if (result != null) {
             return PairedRawVideoSample(timestampNs, result.frameNumber, ownedEvidence, result.value)
         }
-        images[timestampNs] = ownedEvidence
+
+        val retainedBytes = retainedBytesOf(ownedEvidence)
+        val nextBytes = try {
+            Math.addExact(pendingImageBytes, retainedBytes)
+        } catch (overflow: ArithmeticException) {
+            runCatching { ownedEvidence.close() }
+            close()
+            throw IllegalStateException("M10 timestamp-pairing retained-byte accounting overflowed", overflow)
+        }
+        if (nextBytes > maximumPendingImageBytes) {
+            runCatching { ownedEvidence.close() }
+            close()
+            throw IllegalStateException(
+                "M10 detached timestamp pairing exceeded the admitted pending-image byte budget",
+            )
+        }
+
+        images[timestampNs] = PendingImage(ownedEvidence, retainedBytes)
+        pendingImageBytes = nextBytes
         enforceBound()
         return null
     }
@@ -82,9 +108,10 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         require(frameNumber >= 0L) { "M10 Camera2 frame number cannot be negative" }
         check(!closed) { "M10 timestamp pairer is closed" }
         require(!results.containsKey(timestampNs)) { "M10 duplicate capture-result timestamp $timestampNs" }
-        val ownedEvidence = images.remove(timestampNs)
-        if (ownedEvidence != null) {
-            return PairedRawVideoSample(timestampNs, frameNumber, ownedEvidence, result)
+        val pendingImage = images.remove(timestampNs)
+        if (pendingImage != null) {
+            pendingImageBytes = Math.subtractExact(pendingImageBytes, pendingImage.retainedBytes)
+            return PairedRawVideoSample(timestampNs, frameNumber, pendingImage.evidence, result)
         }
         results[timestampNs] = ResultRecord(frameNumber, result)
         enforceBound()
@@ -101,20 +128,30 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
     fun pendingCount(): Int = images.size + results.size
 
     @Synchronized
+    fun pendingImageByteCount(): Long = pendingImageBytes
+
+    @Synchronized
     fun unmatchedResultFrameNumbers(): List<Long> = results.values.map(ResultRecord<R>::frameNumber).sorted()
 
     @Synchronized
     override fun close() {
         if (closed) return
         closed = true
-        images.values.forEach { image -> runCatching { image.close() } }
+        images.values.forEach { pending -> runCatching { pending.evidence.close() } }
         images.clear()
         results.clear()
+        pendingImageBytes = 0L
     }
 
     private fun detachImageReaderLease(image: I): AutoCloseable {
         if (image !is Image) return image
         return DetachedRawSensorImage.copyAndClose(image)
+    }
+
+    private fun retainedBytesOf(evidence: AutoCloseable): Long {
+        val retainedBytes = (evidence as? RetainedByteEvidence)?.retainedByteCount ?: 0L
+        require(retainedBytes >= 0L) { "M10 retained evidence cannot report negative bytes" }
+        return retainedBytes
     }
 
     private fun enforceBound() {
@@ -123,5 +160,6 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         throw IllegalStateException("M10 timestamp pairing exceeded the bounded pending-entry budget")
     }
 
+    private data class PendingImage(val evidence: AutoCloseable, val retainedBytes: Long)
     private data class ResultRecord<R>(val frameNumber: Long, val value: R)
 }
