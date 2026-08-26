@@ -49,7 +49,7 @@ signer_count="$(printf '%s\n' "$signer_output" | sed -n 's/^Number of signers:[[
 signer_sha="$(printf '%s\n' "$signer_output" | sed -n 's/.*certificate SHA-256 digest:[[:space:]]*//p' | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
 readonly application_id version_code version_name min_sdk apk_sha signer_output signer_count signer_sha
 
-test "$application_id" = 'com.sahidcode404.camx' || { echo "Wrong package: $application_id" >&2; exit 1; }
+test "$application_id" = 'com.sahidcode404.camx2' || { echo "Wrong package: $application_id" >&2; exit 1; }
 [[ "$version_code" =~ ^[0-9]+$ ]] && ((version_code >= 1 && version_code <= 2100000000)) || {
   echo "Invalid APK versionCode: $version_code" >&2
   exit 1
@@ -103,4 +103,4 @@ printf '%s\n' "$version_code" > "$output/VERSION_CODE.txt"
 printf '%s\n' "$version_name" > "$output/VERSION_NAME.txt"
 printf '%s\n' "${git_sha,,}" > "$output/GIT_SHA.txt"
 
-echo "Packaged CamX dev OTA $version_name ($version_code), signer $signer_sha."
+echo "Packaged CamX2 dev OTA $version_name ($version_code), signer $signer_sha."
