@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
+import android.media.Image
 import java.util.LinkedHashMap
 
 class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
@@ -21,7 +22,13 @@ class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
     }
 }
 
-/** Exact SENSOR_TIMESTAMP streaming pairer. Overflow is fatal; it never evicts evidence. */
+/**
+ * Exact SENSOR_TIMESTAMP streaming pairer. Overflow is fatal; it never evicts evidence.
+ *
+ * Android ImageReader Images are special-cased at this ownership boundary: the complete RAW plane
+ * is detached to heap-backed evidence and the native Image is closed before it can enter the
+ * timestamp-skew map. This means unmatched image/result ordering cannot consume ImageReader.maxImages.
+ */
 class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private val maximumPendingEntries: Int = M10RawVideoLimits.DEFAULT_PAIR_ENTRIES,
 ) : AutoCloseable {
@@ -41,11 +48,13 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
             image.close()
             throw IllegalArgumentException("M10 duplicate image timestamp $timestampNs")
         }
+
+        val ownedImage = detachImageReaderLease(image)
         val result = results.remove(timestampNs)
         if (result != null) {
-            return PairedRawVideoSample(timestampNs, result.frameNumber, image, result.value)
+            return PairedRawVideoSample(timestampNs, result.frameNumber, ownedImage, result.value)
         }
-        images[timestampNs] = image
+        images[timestampNs] = ownedImage
         enforceBound()
         return null
     }
@@ -84,6 +93,12 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         images.values.forEach { image -> runCatching { image.close() } }
         images.clear()
         results.clear()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun detachImageReaderLease(image: I): I {
+        if (image !is Image || image is DetachedRawSensorImage) return image
+        return DetachedRawSensorImage.copyAndClose(image) as I
     }
 
     private fun enforceBound() {
