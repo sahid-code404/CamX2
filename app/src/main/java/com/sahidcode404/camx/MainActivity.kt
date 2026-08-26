@@ -19,6 +19,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -28,6 +29,9 @@ import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewGraph
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
 import com.sahidcode404.camx.core.camera.model.DisplayRotation
 import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStartOutcome
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStatus
+import com.sahidcode404.camx.core.rawvideo.recording.SensorRawVideoStopOutcome
 import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModel
 import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModelFactory
 import com.sahidcode404.camx.feature.camera.CameraScreen
@@ -35,6 +39,7 @@ import com.sahidcode404.camx.feature.update.DevelopmentUpdatesOverlay
 import com.sahidcode404.camx.ui.theme.CamXTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var cameraPermissionGranted by mutableStateOf(false)
@@ -58,7 +63,9 @@ class MainActivity : ComponentActivity() {
                 var pendingLegacyCapture by remember { mutableStateOf(false) }
                 var captureRequestNonce by remember { mutableStateOf(0) }
                 var captureBusy by remember { mutableStateOf(false) }
+                var videoActionBusy by remember { mutableStateOf(false) }
                 var captureMessage by remember { mutableStateOf<String?>(null) }
+                val cameraScope = rememberCoroutineScope()
 
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
@@ -66,6 +73,8 @@ class MainActivity : ComponentActivity() {
                 val auxAudit by visiblePreviewGraph.auxAudit.collectAsState()
                 val lensInventoryStatus by visiblePreviewGraph.lensInventoryStatus.collectAsState()
                 val photoCaptureAvailable by visiblePreviewGraph.photoCaptureAvailable.collectAsState()
+                val videoCaptureAvailable by visiblePreviewGraph.videoCaptureAvailable.collectAsState()
+                val rawVideoStatus by visiblePreviewGraph.rawVideoStatus.collectAsState()
                 val updateState by updateViewModel.state.collectAsState()
 
                 val captureBusyText = stringResource(R.string.capture_raw_busy)
@@ -73,6 +82,17 @@ class MainActivity : ComponentActivity() {
                 val captureCancelledText = stringResource(R.string.capture_raw_cancelled)
                 val captureFailedText = stringResource(R.string.capture_raw_failed)
                 val storagePermissionText = stringResource(R.string.capture_storage_permission_required)
+                val rawVideoStartingText = stringResource(R.string.raw_video_starting)
+                val rawVideoStoppingText = stringResource(R.string.raw_video_stopping)
+                val rawVideoCancelledText = stringResource(R.string.raw_video_cancelled)
+                val rawVideoNotRecordingText = stringResource(R.string.raw_video_not_recording)
+
+                val videoRecording = rawVideoStatus is SensorRawVideoStatus.Recording
+                val recordingStartedElapsedRealtimeNs =
+                    (rawVideoStatus as? SensorRawVideoStatus.Recording)?.startedElapsedRealtimeNs
+                val videoUiEnabled = videoCaptureAvailable || videoRecording
+                val captureInteractionBusy = captureBusy || videoActionBusy ||
+                    rawVideoStatus is SensorRawVideoStatus.Starting || rawVideoStatus is SensorRawVideoStatus.Stopping
 
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
@@ -104,7 +124,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 LaunchedEffect(captureRequestNonce) {
-                    if (captureRequestNonce <= 0 || captureBusy) return@LaunchedEffect
+                    if (captureRequestNonce <= 0 || captureBusy || videoRecording) return@LaunchedEffect
                     captureBusy = true
                     captureMessage = captureBusyText
                     try {
@@ -123,8 +143,8 @@ class MainActivity : ComponentActivity() {
                         captureBusy = false
                     }
                 }
-                LaunchedEffect(captureMessage, captureBusy) {
-                    if (captureMessage != null && !captureBusy) {
+                LaunchedEffect(captureMessage, captureInteractionBusy, videoRecording) {
+                    if (captureMessage != null && !captureInteractionBusy && !videoRecording) {
                         delay(CAPTURE_MESSAGE_MILLIS)
                         captureMessage = null
                     }
@@ -139,12 +159,14 @@ class MainActivity : ComponentActivity() {
                         lensItems = lensItems,
                         auxAudit = auxAudit,
                         inventoryStatus = lensInventoryStatus,
-                        photoCaptureEnabled = photoCaptureAvailable,
-                        videoCaptureEnabled = false,
-                        captureBusy = captureBusy,
+                        photoCaptureEnabled = photoCaptureAvailable && !videoRecording,
+                        videoCaptureEnabled = videoUiEnabled,
+                        videoRecording = videoRecording,
+                        videoRecordingStartedElapsedRealtimeNs = recordingStartedElapsedRealtimeNs,
+                        captureBusy = captureInteractionBusy,
                         captureMessage = captureMessage,
                         onCapturePhoto = {
-                            if (!captureBusy && photoCaptureAvailable) {
+                            if (!captureBusy && !videoActionBusy && !videoRecording && photoCaptureAvailable) {
                                 if (requiresLegacyStoragePermission() && !storagePermissionGranted) {
                                     pendingLegacyCapture = true
                                     storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -153,7 +175,56 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onToggleVideoRecording = {},
+                        onToggleVideoRecording = {
+                            if (!videoActionBusy && !captureBusy) {
+                                cameraScope.launch {
+                                    videoActionBusy = true
+                                    try {
+                                        when (rawVideoStatus) {
+                                            is SensorRawVideoStatus.Recording -> {
+                                                captureMessage = rawVideoStoppingText
+                                                captureMessage = when (val outcome = visiblePreviewGraph.stopRawVideo()) {
+                                                    is SensorRawVideoStopOutcome.Completed -> getString(
+                                                        R.string.raw_video_saved,
+                                                        outcome.summary.frameCount,
+                                                    )
+                                                    is SensorRawVideoStopOutcome.Failed -> getString(
+                                                        R.string.raw_video_failed,
+                                                        outcome.reason,
+                                                    )
+                                                    SensorRawVideoStopOutcome.NotRecording -> rawVideoNotRecordingText
+                                                    SensorRawVideoStopOutcome.Cancelled -> rawVideoCancelledText
+                                                }
+                                            }
+                                            is SensorRawVideoStatus.Starting,
+                                            is SensorRawVideoStatus.Stopping,
+                                            -> Unit
+                                            else -> {
+                                                if (!videoCaptureAvailable) return@launch
+                                                captureMessage = rawVideoStartingText
+                                                captureMessage = when (val outcome = visiblePreviewGraph.startRawVideo(currentDisplayRotation())) {
+                                                    is SensorRawVideoStartOutcome.Started -> null
+                                                    is SensorRawVideoStartOutcome.Failed -> getString(
+                                                        R.string.raw_video_failed,
+                                                        outcome.reason,
+                                                    )
+                                                    SensorRawVideoStartOutcome.Cancelled -> rawVideoCancelledText
+                                                }
+                                            }
+                                        }
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Throwable) {
+                                        captureMessage = getString(
+                                            R.string.raw_video_failed,
+                                            failure.message ?: getString(R.string.raw_video_unknown_failure),
+                                        )
+                                    } finally {
+                                        videoActionBusy = false
+                                    }
+                                }
+                            }
+                        },
                         onLensSelected = visiblePreviewGraph.coordinator::selectLens,
                         onDeepRescan = { visiblePreviewGraph.requestDeepRescan() },
                         onResetDiscoveryCache = visiblePreviewGraph::resetDiscoveryCache,
