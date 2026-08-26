@@ -41,6 +41,30 @@ class RawVideoTimestampPairerTest {
         assertEquals(2, closes.get())
     }
 
+    @Test
+    fun offerAfterCloseClosesRejectedSourceLease() {
+        val closes = AtomicInteger(0)
+        val pairer = RawVideoTimestampPairer<TestImage, String>(maximumPendingEntries = 4)
+        pairer.close()
+
+        val failure = runCatching { pairer.offerImage(20L, TestImage(closes)) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(1, closes.get())
+    }
+
+    @Test
+    fun invalidTimestampClosesRejectedSourceLease() {
+        val closes = AtomicInteger(0)
+        val pairer = RawVideoTimestampPairer<TestImage, String>(maximumPendingEntries = 4)
+
+        val failure = runCatching { pairer.offerImage(0L, TestImage(closes)) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals(1, closes.get())
+        pairer.close()
+    }
+
     private class TestImage(private val closes: AtomicInteger = AtomicInteger()) : AutoCloseable {
         override fun close() { closes.incrementAndGet() }
     }
