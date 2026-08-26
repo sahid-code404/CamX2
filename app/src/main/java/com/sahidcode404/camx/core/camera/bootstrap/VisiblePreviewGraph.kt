@@ -31,12 +31,15 @@ import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
+import com.sahidcode404.camx.core.camera.model.DisplayRotation
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.preview.GenerationSafePreviewSurfaceProvider
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceBinding
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
+import com.sahidcode404.camx.core.camera.raw.AndroidDngWriter
+import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
 import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
@@ -70,6 +73,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val environment = runtimeEnvironmentFingerprint()
     private val controller = CameraSessionController(cameraManager)
+    private val dngWriter = AndroidDngWriter(appContext)
     private val seedDiscovery = AndroidFirstInstallSeedDiscovery(
         cameraManager = cameraManager,
         environment = environment,
@@ -115,6 +119,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     val topologyRepository = CameraTopologyRepository()
     val auxAudit: StateFlow<AuxHardwareAuditSnapshot> = mutableAuxAudit.asStateFlow()
     val lensInventoryStatus: StateFlow<LensInventoryStatus> = lensInventory.status
+    val photoCaptureAvailable: StateFlow<Boolean> = controller.rawPhotoAvailable
 
     private val auxDiscoveryOrchestrator = PostFirstFrameAuxDiscoveryOrchestrator(
         environment = environment,
@@ -308,6 +313,9 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
             auditTracker.changes.collect { refreshAudit() }
         }
     }
+
+    suspend fun capturePhoto(displayRotation: DisplayRotation): RawCaptureOutcome =
+        controller.captureRawDng(displayRotation, dngWriter)
 
     fun requestDeepRescan(): DeepRescanRequestResult {
         val result = deepRescanCoordinator.requestDeepRescan()
