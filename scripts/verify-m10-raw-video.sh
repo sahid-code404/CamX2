@@ -76,7 +76,7 @@ fi
 
 for token in \
   'DetachedRawSensorImage.copyAndClose(image)' \
-  'image is DetachedRawSensorImage' \
+  'if (image !is Image) return image' \
   'class DetachedRawVideoPair'; do
   rg --fixed-strings --quiet "$token" "$pairer" || {
     echo "M10 timestamp-pairing lease detachment missing: $token" >&2

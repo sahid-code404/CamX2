@@ -9,31 +9,29 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Heap-backed snapshot of one public RAW_SENSOR Image.
  *
  * M10 must not retain ImageReader-owned Image leases while waiting for the matching CaptureResult.
- * This class copies the declared RAW plane extent before closing the source Image, while preserving the
- * Image surface expected by the existing exact-timestamp assembler. The snapshot is not tied to
- * ImageReader/native buffers and therefore does not consume ImageReader.maxImages ownership.
+ * This class copies the declared RAW plane extent before closing the source Image. The snapshot is
+ * not tied to ImageReader/native buffers and therefore does not consume ImageReader.maxImages
+ * ownership.
  */
 internal class DetachedRawSensorImage private constructor(
     private val detachedFormat: Int,
     private val detachedWidth: Int,
     private val detachedHeight: Int,
     private val detachedTimestampNs: Long,
-    private val detachedPlanes: Array<Image.Plane>,
-) : Image() {
+    private val detachedPlanes: Array<DetachedRawSensorPlane>,
+) : AutoCloseable {
     private val closed = AtomicBoolean(false)
 
-    override fun getFormat(): Int = requireOpen(detachedFormat)
+    val format: Int get() = requireOpen(detachedFormat)
+    val width: Int get() = requireOpen(detachedWidth)
+    val height: Int get() = requireOpen(detachedHeight)
+    val timestamp: Long get() = requireOpen(detachedTimestampNs)
 
-    override fun getWidth(): Int = requireOpen(detachedWidth)
-
-    override fun getHeight(): Int = requireOpen(detachedHeight)
-
-    override fun getTimestamp(): Long = requireOpen(detachedTimestampNs)
-
-    override fun getPlanes(): Array<Image.Plane> {
-        check(!closed.get()) { "Detached RAW image is closed" }
-        return detachedPlanes.copyOf()
-    }
+    val planes: Array<DetachedRawSensorPlane>
+        get() {
+            check(!closed.get()) { "Detached RAW image is closed" }
+            return detachedPlanes.copyOf()
+        }
 
     override fun close() {
         closed.set(true)
@@ -42,20 +40,6 @@ internal class DetachedRawSensorImage private constructor(
     private fun <T> requireOpen(value: T): T {
         check(!closed.get()) { "Detached RAW image is closed" }
         return value
-    }
-
-    private class DetachedPlane(
-        private val rowStride: Int,
-        private val pixelStride: Int,
-        bytes: ByteArray,
-    ) : Image.Plane() {
-        private val buffer = ByteBuffer.wrap(bytes).asReadOnlyBuffer()
-
-        override fun getRowStride(): Int = rowStride
-
-        override fun getPixelStride(): Int = pixelStride
-
-        override fun getBuffer(): ByteBuffer = buffer.duplicate()
     }
 
     companion object {
@@ -94,8 +78,8 @@ internal class DetachedRawSensorImage private constructor(
                     sourceBuffer.limit(sourceRequiredBytes.toInt())
                     val bytes = ByteArray(sourceRequiredBytes.toInt())
                     sourceBuffer.get(bytes)
-                    DetachedPlane(plane.rowStride, plane.pixelStride, bytes)
-                }.toTypedArray<Image.Plane>()
+                    DetachedRawSensorPlane(plane.rowStride, plane.pixelStride, bytes)
+                }.toTypedArray()
                 return DetachedRawSensorImage(
                     detachedFormat = source.format,
                     detachedWidth = source.width,
@@ -108,4 +92,15 @@ internal class DetachedRawSensorImage private constructor(
             }
         }
     }
+}
+
+internal class DetachedRawSensorPlane(
+    val rowStride: Int,
+    val pixelStride: Int,
+    bytes: ByteArray,
+) {
+    private val buffer = ByteBuffer.wrap(bytes).asReadOnlyBuffer()
+
+    val buffer: ByteBuffer
+        get() = buffer.duplicate()
 }

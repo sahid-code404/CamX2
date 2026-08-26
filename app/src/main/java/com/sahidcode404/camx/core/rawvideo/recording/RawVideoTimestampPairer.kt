@@ -70,9 +70,9 @@ internal class DetachedRawVideoPair private constructor(
 /**
  * Exact SENSOR_TIMESTAMP streaming pairer. Overflow is fatal; it never evicts evidence.
  *
- * Android ImageReader Images are special-cased at this ownership boundary: the complete RAW plane
- * is detached to heap-backed evidence and the native Image is closed before it can enter the
- * timestamp-skew map. This means unmatched image/result ordering cannot consume ImageReader.maxImages.
+ * Android ImageReader Images are special-cased at this ownership boundary: public RAW_SENSOR
+ * images are detached to heap-backed evidence before they enter the timestamp-skew map. Generic
+ * AutoCloseable inputs remain supported for deterministic host-side pairer tests.
  */
 class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private val maximumPendingEntries: Int = M10RawVideoLimits.DEFAULT_PAIR_ENTRIES,
@@ -142,7 +142,7 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
 
     @Suppress("UNCHECKED_CAST")
     private fun detachImageReaderLease(image: I): I {
-        if (image !is Image || image is DetachedRawSensorImage) return image
+        if (image !is Image) return image
         return DetachedRawSensorImage.copyAndClose(image) as I
     }
 
