@@ -37,9 +37,23 @@ internal class AndroidSensorRawVideoIngest(
             pair.close()
             return false
         }
-        if (!queue.offer(pair)) {
+        val accepted = try {
+            queue.offer(
+                pair,
+                M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!accepted) {
             pair.close()
-            fail(IllegalStateException("M10 ingest queue reached its proven high-water bound; recording stopped instead of dropping RAW evidence"))
+            fail(
+                IllegalStateException(
+                    "M10 ingest queue remained saturated after ${M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS} ms of bounded backpressure; recording stopped instead of dropping RAW evidence",
+                ),
+            )
             return false
         }
         updateHighWater()
