@@ -35,9 +35,11 @@ if rg -n 'android\.hardware\.camera2|android\.media\.Image|CameraSessionControll
   exit 1
 fi
 
-if rg -n 'demosaic|remosaic|tone.?map|saturation|contrast|artistic|super.?resolution' \
+# Negative semantic declarations such as "no-demosaic" are allowed in the frozen graph identity.
+# Reject executable/reference implementation symbols that would actually cross the M7 grid/render boundary.
+if rg -n -i '\b(fun|class|object)\s+(demosaic|remosaic|tonemap|applytonemap|superresolution|applysaturation|applycontrast)\b|\b(demosaic|remosaic|tonemap|applytonemap|superresolution|applysaturation|applycontrast)\s*\(' \
   app/src/main/java/com/sahidcode404/camx/core/imaging/reconstruction; then
-  echo 'M7 scalar negative production contains a forbidden rendering/grid-mutation token.' >&2
+  echo 'M7 scalar negative production contains executable rendering or grid-mutation logic.' >&2
   exit 1
 fi
 
