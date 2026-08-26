@@ -37,7 +37,7 @@ jq --exit-status '
     "mandatory"] | sort)) and
   .schema == 1 and
   .channel == "development" and
-  .applicationId == "com.sahidcode404.camx" and
+  .applicationId == "com.sahidcode404.camx2" and
   (.versionCode | type == "number" and . >= 1 and . <= 2100000000 and . == floor) and
   (.versionName | type == "string" and length >= 1 and length <= 128) and
   .minSdk == 23 and
@@ -80,7 +80,7 @@ version_name="$(printf '%s\n' "$badging" | sed -n "s/^package:.*versionName='\([
 min_sdk="$(printf '%s\n' "$badging" | sed -n "s/^sdkVersion:'\([^']*\)'.*/\1/p" | head -n 1)"
 readonly badging package_name version_code version_name min_sdk
 
-test "$package_name" = 'com.sahidcode404.camx' || { echo 'APK package is not the fixed CamX ID.' >&2; exit 1; }
+test "$package_name" = 'com.sahidcode404.camx2' || { echo 'APK package is not the fixed CamX2 ID.' >&2; exit 1; }
 test "$package_name" = "$(jq -er '.applicationId' "$manifest")" || { echo 'Package mismatch.' >&2; exit 1; }
 test "$version_code" = "$(jq -er '.versionCode | tostring' "$manifest")" || { echo 'versionCode mismatch.' >&2; exit 1; }
 test "$version_name" = "$(jq -er '.versionName' "$manifest")" || { echo 'versionName mismatch.' >&2; exit 1; }
