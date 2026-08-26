@@ -70,7 +70,6 @@ import com.sahidcode404.camx.core.camera.raw.RawTimestampPairer
 import com.sahidcode404.camx.core.camera.runtime.CameraGenerationGate
 import com.sahidcode404.camx.core.camera.trace.BoundedCameraStartupTrace
 import com.sahidcode404.camx.core.rawvideo.recording.AndroidSensorRawVideoIngest
-import com.sahidcode404.camx.core.rawvideo.recording.DetachedRawVideoPair
 import com.sahidcode404.camx.core.rawvideo.recording.CxrbSensorRawVideoSpool
 import com.sahidcode404.camx.core.rawvideo.recording.M10RawVideoLimits
 import com.sahidcode404.camx.core.rawvideo.recording.RawVideoTimestampPairer
@@ -1770,7 +1769,7 @@ class CameraSessionController private constructor(
         private suspend fun closeImageCallbacks() {
             runCatching { reader.setOnImageAvailableListener(null, null) }
             imageCallbackThread.quitSafely()
-            withContext(Dispatchers.IO) {
+            withContext(NonCancellable + Dispatchers.IO) {
                 imageCallbackThread.join(M10RawVideoLimits.WORKER_JOIN_TIMEOUT_MILLIS)
             }
         }
@@ -2069,7 +2068,7 @@ class CameraSessionController private constructor(
             }
 
             fun publish(pair: com.sahidcode404.camx.core.rawvideo.recording.PairedRawVideoSample<Image, CaptureResult>?) {
-                if (pair != null && !ingest.offer(DetachedRawVideoPair.from(pair))) {
+                if (pair != null && !ingest.offer(pair)) {
                     fail(RawCapturePlatformException("M10 bounded ingest rejected a paired RAW frame"))
                 }
             }

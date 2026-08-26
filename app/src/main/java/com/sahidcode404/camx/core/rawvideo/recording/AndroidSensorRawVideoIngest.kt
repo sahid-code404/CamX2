@@ -1,5 +1,7 @@
 package com.sahidcode404.camx.core.rawvideo.recording
 
+import android.hardware.camera2.CaptureResult
+import android.media.Image
 import android.os.SystemClock
 import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import java.util.concurrent.ArrayBlockingQueue
@@ -10,12 +12,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 
 /**
- * Bounded ownership bridge from detached timestamp pairs to immutable canonical CXRB packets.
+ * Bounded ownership bridge from exact timestamp pairs to immutable canonical CXRB packets.
  *
- * A Camera2 Image must never sit in the asynchronous ingest queue. The pairer first copies the
- * declared RAW plane extent and closes the ImageReader lease; only heap-backed DetachedRawVideoPair
- * values can wait behind storage backpressure. Canonicalization and hashing run on the ingest worker,
- * so a large RAW frame cannot stall the Camera2 result callback while the queue is full.
+ * A Camera2 Image must never sit in the asynchronous ingest queue. The pair is converted at this
+ * boundary: DetachedRawVideoPair closes the ImageReader lease before heap-backed evidence waits
+ * behind storage backpressure. Canonicalization and hashing run on the ingest worker, so a large
+ * RAW frame cannot stall the Camera2 result callback while the queue is full.
  */
 internal class AndroidSensorRawVideoIngest(
     context: RawCaptureContext,
@@ -37,25 +39,36 @@ internal class AndroidSensorRawVideoIngest(
         start()
     }
 
-    fun offer(pair: DetachedRawVideoPair): Boolean {
+    fun offer(pair: PairedRawVideoSample<Image, CaptureResult>): Boolean {
         if (!accepting.get()) {
             pair.close()
             return false
         }
 
+        val detached = try {
+            DetachedRawVideoPair.from(pair)
+        } catch (error: Throwable) {
+            fail(error)
+            return false
+        }
+        if (!accepting.get()) {
+            detached.close()
+            return false
+        }
+
         val accepted = try {
             queue.offer(
-                pair,
+                detached,
                 M10RawVideoLimits.INGEST_BACKPRESSURE_TIMEOUT_MILLIS,
                 TimeUnit.MILLISECONDS,
             )
         } catch (error: Throwable) {
-            pair.close()
+            detached.close()
             fail(error)
             return false
         }
         if (!accepted) {
-            pair.close()
+            detached.close()
             fail(
                 IllegalStateException(
                     "M10 canonical ingest queue remained saturated after " +
