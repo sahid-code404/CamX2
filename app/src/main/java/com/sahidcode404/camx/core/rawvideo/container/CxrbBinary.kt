@@ -206,12 +206,12 @@ internal object CxrbBinary {
 
     private fun DataOutputStream.writeNullableLong(value: Long?) {
         writeBoolean(value != null)
-        value?.let(::writeLong)
+        value?.let { writeLong(it) }
     }
 
     private fun DataOutputStream.writeNullableToken(value: String?) {
         writeBoolean(value != null)
-        value?.let(::writeToken)
+        value?.let { writeToken(it) }
     }
 
     private fun DataOutputStream.writeToken(value: String) {
