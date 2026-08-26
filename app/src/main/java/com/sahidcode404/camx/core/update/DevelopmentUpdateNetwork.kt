@@ -10,9 +10,9 @@ import javax.net.ssl.HttpsURLConnection
 
 internal object DevOtaEndpoints {
     const val MANIFEST_URL =
-        "https://github.com/sahid-code404/CamX/releases/download/dev-latest/dev-manifest.json"
+        "https://github.com/sahid-code404/CamX2/releases/download/dev-latest/dev-manifest.json"
     const val APK_URL =
-        "https://github.com/sahid-code404/CamX/releases/download/dev-latest/CamX-dev.apk"
+        "https://github.com/sahid-code404/CamX2/releases/download/dev-latest/CamX-dev.apk"
 }
 
 internal object DevelopmentNetworkPolicy {
@@ -90,7 +90,7 @@ internal class HttpsDevelopmentHttpClient : DevelopmentHttpClient {
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/octet-stream, application/json")
             connection.setRequestProperty("Accept-Encoding", "identity")
-            connection.setRequestProperty("User-Agent", "CamX-development-ota/1")
+            connection.setRequestProperty("User-Agent", "CamX2-development-ota/1")
             activeConnection.set(connection)
 
             val status = try {
