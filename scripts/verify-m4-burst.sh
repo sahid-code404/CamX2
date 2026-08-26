@@ -41,7 +41,7 @@ for requirement in \
   'session.captureBurst(' \
   'source.acquireNextImage()' \
   'withContext(Dispatchers.Default)' \
-  'Delivered RAW source extent exceeds the pre-capture reservation'; do
+  'require(sourceRequired <= reservation.maxSourceBytesPerFrame)'; do
   if ! rg --fixed-strings --quiet "$requirement" "$models" "$pairer" "$controller" "$output_plan"; then
     echo "M4 implementation requirement missing: $requirement" >&2
     exit 1
