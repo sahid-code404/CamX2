@@ -2,7 +2,6 @@ package com.sahidcode404.camx.core.rawvideo.recording
 
 import android.hardware.camera2.CaptureResult
 import android.media.Image
-import android.media.ImageFormat
 import com.sahidcode404.camx.core.camera.acquisition.AcquisitionPlaneDescriptor
 import com.sahidcode404.camx.core.camera.acquisition.AcquisitionSourceApi
 import com.sahidcode404.camx.core.camera.acquisition.AcquisitionTimebase
@@ -27,7 +26,7 @@ internal data class SensorRawVideoFrameBatch(
     val frame: PackedNoneFrame,
 )
 
-/** Copies one exact paired Camera2 RAW_SENSOR frame into the canonical padding-free M1 raster. */
+/** Binds exact Camera2 metadata to an already-detached, padding-free RAW_SENSOR raster. */
 internal class SensorRawVideoFrameAssembler(
     private val context: RawCaptureContext,
     private val providerEpoch: Long,
@@ -43,17 +42,33 @@ internal class SensorRawVideoFrameAssembler(
         hostTimestampNs: Long,
     ): SensorRawVideoFrameBatch {
         require(hostTimestampNs > 0L)
-        val image = pair.takeImage()
+        val evidence = pair.takeDetachedRawSensorImage()
         try {
-            require(image.format == ImageFormat.RAW_SENSOR) { "M10 received non-RAW_SENSOR image evidence" }
-            require(image.width == profile.rawSize.width && image.height == profile.rawSize.height) {
+            require(evidence.width == profile.rawSize.width && evidence.height == profile.rawSize.height) {
                 "M10 RAW image dimensions changed inside the recording epoch"
             }
-            require(image.timestamp == pair.timestampNs) { "M10 Image timestamp diverged from its exact pair" }
+            require(evidence.timestampNs == pair.timestampNs) { "M10 detached RAW timestamp diverged from its exact pair" }
             require(pair.result.get(CaptureResult.SENSOR_TIMESTAMP) == pair.timestampNs) {
                 "M10 CaptureResult timestamp diverged from its exact pair"
             }
-            require(image.planes.size == 1) { "M10 public RAW_SENSOR requires exactly one plane" }
+
+            val meaningfulRowBytesLong = Math.multiplyExact(
+                profile.rawSize.width.toLong(),
+                M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL,
+            )
+            require(meaningfulRowBytesLong <= Int.MAX_VALUE.toLong())
+            require(evidence.sourcePixelStrideBytes == M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
+                "M10 detached RAW_SENSOR pixel stride is not the public 16-bit unpacked layout"
+            }
+            require(evidence.sourceRowStrideBytes.toLong() >= meaningfulRowBytesLong) {
+                "M10 detached RAW_SENSOR row stride is smaller than a meaningful row"
+            }
+            val canonicalBytesLong = Math.multiplyExact(meaningfulRowBytesLong, profile.rawSize.height.toLong())
+            require(canonicalBytesLong <= Int.MAX_VALUE.toLong())
+            val canonical = evidence.takeCanonicalRaster()
+            require(canonical.size.toLong() == canonicalBytesLong) {
+                "M10 detached RAW raster byte count diverged from the immutable profile"
+            }
 
             val base = baseFrameNumber ?: pair.frameNumber.also { baseFrameNumber = it }
             val previous = lastFrameNumber
@@ -75,39 +90,6 @@ internal class SensorRawVideoFrameAssembler(
             }
             lastFrameNumber = pair.frameNumber
 
-            val plane = image.planes[0]
-            val meaningfulRowBytesLong = Math.multiplyExact(
-                profile.rawSize.width.toLong(),
-                M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL,
-            )
-            require(meaningfulRowBytesLong <= Int.MAX_VALUE.toLong())
-            val meaningfulRowBytes = meaningfulRowBytesLong.toInt()
-            require(plane.pixelStride == M10RawVideoLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
-                "M10 RAW_SENSOR pixel stride is not the public 16-bit unpacked layout"
-            }
-            require(plane.rowStride >= meaningfulRowBytes) {
-                "M10 RAW_SENSOR row stride is smaller than a meaningful row"
-            }
-            val sourceRequired = Math.addExact(
-                Math.multiplyExact((profile.rawSize.height - 1).toLong(), plane.rowStride.toLong()),
-                meaningfulRowBytesLong,
-            )
-            val source = plane.buffer.duplicate()
-            source.clear()
-            require(sourceRequired <= source.capacity().toLong()) {
-                "M10 RAW source buffer is shorter than its declared row layout"
-            }
-            val canonicalBytesLong = Math.multiplyExact(meaningfulRowBytesLong, profile.rawSize.height.toLong())
-            require(canonicalBytesLong <= Int.MAX_VALUE.toLong())
-            val canonical = ByteArray(canonicalBytesLong.toInt())
-            repeat(profile.rawSize.height) { row ->
-                val sourceOffset = Math.multiplyExact(row.toLong(), plane.rowStride.toLong())
-                val destinationOffset = Math.multiplyExact(row.toLong(), meaningfulRowBytesLong)
-                require(sourceOffset <= Int.MAX_VALUE.toLong() && destinationOffset <= Int.MAX_VALUE.toLong())
-                source.position(sourceOffset.toInt())
-                source.get(canonical, destinationOffset.toInt(), meaningfulRowBytes)
-            }
-
             val descriptor = RepresentationDescriptor(
                 representation = MosaicSensorSamples,
                 sourceFormat = PublicSourceFormat.RAW_SENSOR,
@@ -120,10 +102,10 @@ internal class SensorRawVideoFrameAssembler(
                     AcquisitionPlaneDescriptor(
                         planeIndex = 0,
                         offsetBytes = 0L,
-                        rowStrideBytes = plane.rowStride.toLong(),
+                        rowStrideBytes = evidence.sourceRowStrideBytes.toLong(),
                         meaningfulRowBytes = meaningfulRowBytesLong,
                         rowCount = profile.rawSize.height,
-                        pixelStrideBytes = plane.pixelStride,
+                        pixelStrideBytes = evidence.sourcePixelStrideBytes,
                     ),
                 ),
                 cfaPattern = profile.cfaPattern,
@@ -177,7 +159,7 @@ internal class SensorRawVideoFrameAssembler(
             )
             return SensorRawVideoFrameBatch(gap, frame)
         } finally {
-            image.close()
+            evidence.close()
             pair.close()
         }
     }
