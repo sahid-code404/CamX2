@@ -55,6 +55,14 @@ import com.sahidcode404.camx.core.camera.model.RawPair
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.raw.AndroidDngWriter
+import com.sahidcode404.camx.core.camera.raw.ImmutableRawBurstFrame
+import com.sahidcode404.camx.core.camera.raw.ImmutableRawFrameSet
+import com.sahidcode404.camx.core.camera.raw.M4BurstLimits
+import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureOutcome
+import com.sahidcode404.camx.core.camera.raw.RawBurstFrameMetadata
+import com.sahidcode404.camx.core.camera.raw.RawBurstPairSet
+import com.sahidcode404.camx.core.camera.raw.RawBurstReservation
+import com.sahidcode404.camx.core.camera.raw.RawBurstTimestampPairer
 import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
 import com.sahidcode404.camx.core.camera.raw.RawTimestampPairer
 import com.sahidcode404.camx.core.camera.runtime.CameraGenerationGate
@@ -79,7 +87,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
-/** Sole Camera2 device/session/repeating-preview and one-shot RAW transaction owner. */
+/** Sole Camera2 device/session/repeating-preview, one-shot RAW, and bounded RAW-burst owner. */
 class CameraSessionController private constructor(
     private val runtime: ControllerRuntime,
     private val elapsedRealtimeNs: () -> Long,
@@ -285,6 +293,125 @@ class CameraSessionController private constructor(
         closePlan(previewSessionCleanup)
         prepareFailure?.let { return it }
         return executeRawCapture(platform, checkNotNull(command), writer)
+    }
+
+    /**
+     * M4 finite sensor-source burst. The caller must supply an exact-profile source-buffer upper bound;
+     * dimensions alone do not prove Image.Plane row stride. No processing algorithm runs here.
+     */
+    internal suspend fun captureRawBurst(
+        displayRotation: DisplayRotation,
+        frameCount: Int,
+        maxSourceBytesPerFrame: Long,
+        maxResidentBytes: Long,
+        timeoutMillis: Long = M4BurstLimits.DEFAULT_TIMEOUT_MILLIS,
+    ): RawBurstCaptureOutcome {
+        check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
+        val platform = runtime.platform as? AndroidCameraOwnerPlatform
+            ?: return RawBurstCaptureOutcome.Failed(RawUnsupported)
+
+        var candidate: PreviewIntent? = null
+        mutationGate.mutate {
+            val previewing = mutableState.value as? CameraEngineState.Previewing
+            val preview = currentPreview
+            if (
+                previewing?.firstFrameVerified == true &&
+                preview != null &&
+                preview.selection == previewing.selection &&
+                preview.route.physicalCameraId == null &&
+                activeDevice != null &&
+                activeSession != null
+            ) {
+                candidate = preview
+            }
+        }
+        val initialPreview = candidate ?: return RawBurstCaptureOutcome.Failed(StaleSession)
+        val rawDescriptor = try {
+            platform.resolveRawDescriptor(initialPreview.route)
+        } catch (_: Throwable) {
+            null
+        } ?: return RawBurstCaptureOutcome.Failed(RawUnsupported)
+        val reservation = try {
+            RawBurstReservation.forRawSensor(
+                frameCount = frameCount,
+                rawSize = rawDescriptor.rawSize,
+                maxSourceBytesPerFrame = maxSourceBytesPerFrame,
+                maxResidentBytes = maxResidentBytes,
+                timeoutMillis = timeoutMillis,
+            )
+        } catch (failure: Throwable) {
+            return RawBurstCaptureOutcome.Failed(
+                RawCaptureRejected(failure.message ?: "RAW burst reservation rejected"),
+            )
+        }
+
+        var command: RawBurstCaptureCommand? = null
+        var previewSessionCleanup: CameraCleanupPlan? = null
+        var prepareFailure: RawBurstCaptureOutcome? = null
+        mutationGate.mutate {
+            val previewing = mutableState.value as? CameraEngineState.Previewing
+            val preview = currentPreview
+            val device = activeDevice
+            if (
+                previewing?.firstFrameVerified != true ||
+                preview == null ||
+                preview != initialPreview ||
+                preview.selection != previewing.selection ||
+                preview.route.physicalCameraId != null ||
+                device == null ||
+                activeSession == null
+            ) {
+                prepareFailure = RawBurstCaptureOutcome.Failed(StaleSession)
+                return@mutate
+            }
+            check(nextCaptureToken < Long.MAX_VALUE) { "RAW capture token space exhausted" }
+            val captureToken = CaptureToken(++nextCaptureToken)
+            val next = generations.advanceSession()
+            val rawSelection = preview.selection.copy(sessionGeneration = next.session)
+            val rawPreview = preview.copy(selection = rawSelection)
+            val outputPlan = CameraSessionOutputPlan.temporaryRawBurst(
+                previewSurfaceIdentity = preview.surface.identity,
+                captureToken = captureToken,
+            )
+            currentPreview = rawPreview
+            asyncOwnership.publishIntent(
+                CameraOperationIdentity(
+                    selection = rawSelection,
+                    surface = rawPreview.surface.identity,
+                    previewAttempt = rawPreview.attempt,
+                    captureToken = captureToken,
+                ),
+            )
+            val deviceEventPermit = asyncOwnership.begin(PendingCameraStage.OPEN)
+            device.eventPermit = deviceEventPermit
+            device.openCommand.deviceEventPermit.set(deviceEventPermit)
+            previewSessionCleanup = detachSessionLocked()
+            transition(CameraEngineState.ConfiguringRaw(rawSelection, captureToken))
+            mark(CameraStartupMilestone.SHUTTER_PRESS, rawSelection)
+            val context = RawCaptureContext(
+                captureToken = captureToken,
+                selectionGeneration = rawSelection.selectionGeneration,
+                sessionGeneration = rawSelection.sessionGeneration,
+                canonicalLensFingerprint = rawSelection.canonicalLensFingerprint,
+                cameraProfileFingerprint = rawSelection.profileFingerprint,
+                routeId = rawSelection.routeId,
+                displayRotationAtShutter = displayRotation,
+                sensorOrientationDegrees = rawDescriptor.sensorOrientationDegrees,
+                lensFacing = rawDescriptor.lensFacing,
+                rawSize = rawDescriptor.rawSize,
+                timeoutMillis = reservation.timeoutMillis,
+            )
+            command = RawBurstCaptureCommand(
+                preview = rawPreview,
+                outputPlan = outputPlan,
+                context = context,
+                reservation = reservation,
+                device = device.handle,
+            )
+        }
+        closePlan(previewSessionCleanup)
+        prepareFailure?.let { return it }
+        return executeRawBurst(platform, checkNotNull(command))
     }
 
     suspend fun surfaceInvalidated(identity: PreviewSurfaceIdentity) {
@@ -512,6 +639,125 @@ class CameraSessionController private constructor(
         return restoreAfterRaw(command, writeOutcome)
     }
 
+    private suspend fun executeRawBurst(
+        platform: AndroidCameraOwnerPlatform,
+        command: RawBurstCaptureCommand,
+    ): RawBurstCaptureOutcome {
+        val resources = try {
+            platform.configureRawSession(
+                device = command.device,
+                previewSurfaceToken = command.preview.surface.token,
+                rawSize = command.context.rawSize,
+                timeoutMillis = command.context.timeoutMillis,
+                maxImages = command.reservation.frameCount,
+            )
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) {
+                restoreAfterRawBurst(command, RawBurstCaptureOutcome.Cancelled)
+            }
+            throw cancelled
+        } catch (_: Throwable) {
+            return restoreAfterRawBurst(command, RawBurstCaptureOutcome.Failed(RawSessionRejected))
+        }
+
+        var adopted = false
+        mutationGate.mutate {
+            val state = mutableState.value as? CameraEngineState.ConfiguringRaw
+            if (
+                state?.token == command.context.captureToken &&
+                state.selection == command.preview.selection &&
+                currentPreview == command.preview &&
+                activeDevice?.handle === command.device &&
+                activeSession == null
+            ) {
+                activeSession = ActiveSession(resources.session, resources.sessionCleanup)
+                activeRawReader = ActiveRawReader(resources.readerCleanup)
+                updateResourcesLocked()
+                transition(CameraEngineState.CapturingRaw(state.selection, state.token))
+                mark(CameraStartupMilestone.RAW_SESSION_READY, state.selection)
+                mark(CameraStartupMilestone.RAW_REQUEST, state.selection)
+                adopted = true
+            }
+        }
+        if (!adopted) {
+            closeRawResources(resources)
+            return RawBurstCaptureOutcome.Cancelled
+        }
+
+        val pairSet = try {
+            platform.captureRawBurstPairs(
+                device = command.device,
+                resources = resources,
+                reservation = command.reservation,
+                onImage = { mark(CameraStartupMilestone.RAW_IMAGE, command.preview.selection) },
+                onResult = { mark(CameraStartupMilestone.RAW_RESULT, command.preview.selection) },
+            )
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) {
+                restoreAfterRawBurst(command, RawBurstCaptureOutcome.Cancelled)
+            }
+            throw cancelled
+        } catch (_: TimeoutCancellationException) {
+            return restoreAfterRawBurst(command, RawBurstCaptureOutcome.Failed(RawPairTimeout))
+        } catch (failure: RawCapturePlatformException) {
+            return restoreAfterRawBurst(
+                command,
+                RawBurstCaptureOutcome.Failed(
+                    RawCaptureRejected(failure.message ?: "RAW burst capture rejected"),
+                ),
+            )
+        } catch (failure: Throwable) {
+            return restoreAfterRawBurst(
+                command,
+                RawBurstCaptureOutcome.Failed(
+                    RawCaptureRejected(failure.message ?: "RAW burst capture failed"),
+                ),
+            )
+        }
+
+        var accepted = false
+        mutationGate.mutate {
+            val state = mutableState.value as? CameraEngineState.CapturingRaw
+            if (
+                state?.token == command.context.captureToken &&
+                state.selection == command.preview.selection &&
+                currentPreview == command.preview
+            ) {
+                transition(CameraEngineState.PairingRaw(state.selection, state.token))
+                mark(CameraStartupMilestone.RAW_PAIR, state.selection)
+                activeRawImage = ActiveRawImage(
+                    cleanup = CameraResourceCleanup(pairSet::close),
+                    openImageCount = command.reservation.frameCount,
+                )
+                updateResourcesLocked()
+                accepted = true
+            }
+        }
+        if (!accepted) {
+            pairSet.close()
+            return RawBurstCaptureOutcome.Cancelled
+        }
+
+        val outcome = try {
+            val frameSet = withContext(Dispatchers.Default) {
+                copyRawBurstFrameSet(command, pairSet)
+            }
+            RawBurstCaptureOutcome.Captured(frameSet)
+        } catch (cancelled: CancellationException) {
+            pairSet.close()
+            withContext(NonCancellable) {
+                restoreAfterRawBurst(command, RawBurstCaptureOutcome.Cancelled)
+            }
+            throw cancelled
+        } catch (failure: Throwable) {
+            pairSet.close()
+            RawBurstCaptureOutcome.Failed(
+                RawCaptureRejected(failure.message ?: "RAW burst evidence validation failed"),
+            )
+        }
+        return restoreAfterRawBurst(command, outcome)
+    }
+
     private suspend fun restoreAfterRaw(
         command: RawCaptureCommand,
         outcome: RawCaptureOutcome,
@@ -572,6 +818,168 @@ class CameraSessionController private constructor(
         closePlan(cleanup)
         configure?.let(::issueConfigure)
         return result
+    }
+
+    private suspend fun restoreAfterRawBurst(
+        command: RawBurstCaptureCommand,
+        outcome: RawBurstCaptureOutcome,
+    ): RawBurstCaptureOutcome {
+        var cleanup: CameraCleanupPlan? = null
+        var configure: ConfigureCommand? = null
+        var result = outcome
+        mutationGate.mutate {
+            val state = mutableState.value
+            val rawIdentityMatches = when (state) {
+                is CameraEngineState.ConfiguringRaw -> state.token == command.context.captureToken
+                is CameraEngineState.CapturingRaw -> state.token == command.context.captureToken
+                is CameraEngineState.PairingRaw -> state.token == command.context.captureToken
+                else -> false
+            }
+            if (!rawIdentityMatches) {
+                result = RawBurstCaptureOutcome.Cancelled
+                return@mutate
+            }
+
+            val selection = checkNotNull(state.selectionOrNull())
+            cleanup = detachRawTransactionLocked()
+            val device = activeDevice
+            val preview = currentPreview
+            if (device == null || preview == null || preview.selection != selection) {
+                asyncOwnership.invalidatePending()
+                currentPreview = null
+                transition(CameraEngineState.RecoverableError(selection, StaleSession))
+                result = RawBurstCaptureOutcome.Failed(StaleSession)
+                return@mutate
+            }
+
+            val next = generations.advanceSession()
+            val restoredSelection = preview.selection.copy(sessionGeneration = next.session)
+            val restoredPreview = preview.copy(
+                selection = restoredSelection,
+                attempt = PreviewConfigurationAttemptKind.SAFE_BASELINE,
+            )
+            currentPreview = restoredPreview
+            asyncOwnership.publishIntent(restoredPreview.identity())
+            val deviceEventPermit = asyncOwnership.begin(PendingCameraStage.OPEN)
+            device.eventPermit = deviceEventPermit
+            device.openCommand.deviceEventPermit.set(deviceEventPermit)
+            transition(
+                CameraEngineState.RestoringPreview(
+                    selection = restoredSelection,
+                    token = command.context.captureToken,
+                ),
+            )
+            mark(CameraStartupMilestone.SESSION_CONFIG_REQUESTED, restoredSelection)
+            configure = ConfigureCommand(
+                preview = restoredPreview,
+                configurationPermit = asyncOwnership.begin(PendingCameraStage.PREVIEW_CONFIGURATION),
+                device = device.handle,
+            )
+        }
+        closePlan(cleanup)
+        configure?.let(::issueConfigure)
+        return result
+    }
+
+    private fun copyRawBurstFrameSet(
+        command: RawBurstCaptureCommand,
+        pairSet: RawBurstPairSet<Image, CaptureResult>,
+    ): ImmutableRawFrameSet {
+        val frames = ArrayList<ImmutableRawBurstFrame>(command.reservation.frameCount)
+        try {
+            pairSet.pairs.forEach { pair ->
+                val image = pair.takeImage()
+                try {
+                    frames += copyRawBurstFrame(
+                        reservation = command.reservation,
+                        ordinal = pair.ordinal,
+                        timestampNs = pair.timestampNs,
+                        image = image,
+                        result = pair.result,
+                    )
+                } finally {
+                    image.close()
+                }
+            }
+        } finally {
+            pairSet.close()
+        }
+        return ImmutableRawFrameSet(command.context, command.reservation, frames)
+    }
+
+    private fun copyRawBurstFrame(
+        reservation: RawBurstReservation,
+        ordinal: Int,
+        timestampNs: Long,
+        image: Image,
+        result: CaptureResult,
+    ): ImmutableRawBurstFrame {
+        require(image.format == ImageFormat.RAW_SENSOR) { "M4 burst received a non-RAW_SENSOR Image" }
+        require(image.width == reservation.rawSize.width && image.height == reservation.rawSize.height) {
+            "M4 burst Image dimensions diverged from the reservation"
+        }
+        require(image.timestamp == timestampNs) { "M4 burst Image timestamp diverged from its pair" }
+        val resultTimestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+        require(resultTimestamp == timestampNs) { "M4 burst result timestamp diverged from its pair" }
+        require(image.planes.size == 1) { "Public RAW_SENSOR burst evidence must expose exactly one plane" }
+
+        val plane = image.planes[0]
+        val canonicalRowBytesLong = Math.multiplyExact(
+            reservation.rawSize.width.toLong(),
+            M4BurstLimits.RAW_SENSOR_BYTES_PER_PIXEL,
+        )
+        require(canonicalRowBytesLong <= Int.MAX_VALUE.toLong()) { "RAW canonical row exceeds JVM addressing" }
+        val canonicalRowBytes = canonicalRowBytesLong.toInt()
+        require(plane.pixelStride == M4BurstLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
+            "RAW_SENSOR pixel stride is not the public two-byte layout"
+        }
+        require(plane.rowStride >= canonicalRowBytes) { "RAW_SENSOR row stride is smaller than a meaningful row" }
+        val sourceRequired = Math.addExact(
+            Math.multiplyExact((reservation.rawSize.height - 1).toLong(), plane.rowStride.toLong()),
+            canonicalRowBytesLong,
+        )
+        require(sourceRequired <= reservation.maxSourceBytesPerFrame) {
+            "Delivered RAW source extent exceeds the pre-capture reservation"
+        }
+        val canonicalBytesLong = Math.multiplyExact(
+            canonicalRowBytesLong,
+            reservation.rawSize.height.toLong(),
+        )
+        require(canonicalBytesLong == reservation.canonicalBytesPerFrame) {
+            "Delivered RAW canonical extent diverged from the reservation"
+        }
+        require(canonicalBytesLong <= Int.MAX_VALUE.toLong()) { "RAW canonical frame exceeds JVM array addressing" }
+
+        val source = plane.buffer.duplicate()
+        source.clear()
+        require(sourceRequired <= source.capacity().toLong()) { "RAW plane buffer is shorter than its declared layout" }
+        val canonical = ByteArray(canonicalBytesLong.toInt())
+        repeat(reservation.rawSize.height) { row ->
+            val sourceOffsetLong = Math.multiplyExact(row.toLong(), plane.rowStride.toLong())
+            val destinationOffsetLong = Math.multiplyExact(row.toLong(), canonicalRowBytesLong)
+            require(sourceOffsetLong <= Int.MAX_VALUE.toLong() && destinationOffsetLong <= Int.MAX_VALUE.toLong()) {
+                "RAW row offset exceeds JVM array addressing"
+            }
+            source.position(sourceOffsetLong.toInt())
+            source.get(canonical, destinationOffsetLong.toInt(), canonicalRowBytes)
+        }
+
+        return ImmutableRawBurstFrame(
+            ordinal = ordinal,
+            rawSize = reservation.rawSize,
+            sourceRowStrideBytes = plane.rowStride,
+            sourcePixelStrideBytes = plane.pixelStride,
+            sourceRequiredBytes = sourceRequired,
+            canonicalRowBytes = canonicalRowBytes,
+            metadata = RawBurstFrameMetadata(
+                sensorTimestampNs = timestampNs,
+                frameNumber = result.frameNumber,
+                exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY),
+                frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION),
+            ),
+            canonicalRaster = canonical,
+        )
     }
 
     private suspend fun startPreviewInternal(
@@ -1012,7 +1420,7 @@ class CameraSessionController private constructor(
             captureSessions = if (activeSession == null) 0 else 1,
             ownedSurfaces = if (activeSurface == null) 0 else 1,
             imageReaders = if (activeRawReader == null) 0 else 1,
-            openImages = if (activeRawImage == null) 0 else 1,
+            openImages = activeRawImage?.openImageCount ?: 0,
             cameraWorkers = if (shutdownRequested.get()) 0 else runtime.workerCount,
         )
     }
@@ -1091,7 +1499,12 @@ class CameraSessionController private constructor(
 
     private data class ActiveRawReader(val cleanup: CameraResourceCleanup)
 
-    private data class ActiveRawImage(val cleanup: CameraResourceCleanup)
+    private data class ActiveRawImage(
+        val cleanup: CameraResourceCleanup,
+        val openImageCount: Int = 1,
+    ) {
+        init { require(openImageCount in 1..M4BurstLimits.MAX_FRAMES) }
+    }
 
     private data class ActiveDevice(
         val handle: CameraDeviceHandle,
@@ -1151,6 +1564,24 @@ class CameraSessionController private constructor(
         init {
             require(outputPlan.captureToken == context.captureToken)
             require(outputPlan.previewSurfaceIdentity == preview.surface.identity)
+        }
+    }
+
+    private data class RawBurstCaptureCommand(
+        val preview: PreviewIntent,
+        val outputPlan: CameraSessionOutputPlan,
+        val context: RawCaptureContext,
+        val reservation: RawBurstReservation,
+        val device: CameraDeviceHandle,
+    ) {
+        init {
+            require(outputPlan.captureToken == context.captureToken)
+            require(outputPlan.previewSurfaceIdentity == preview.surface.identity)
+            require(outputPlan.bindings.any {
+                it.role == CameraOutputRole.RAW && it.lifetime == CameraRequestLifetime.BOUNDED_BURST
+            })
+            require(reservation.rawSize == context.rawSize)
+            require(reservation.timeoutMillis == context.timeoutMillis)
         }
     }
 
@@ -1316,14 +1747,16 @@ class CameraSessionController private constructor(
             previewSurfaceToken: Any,
             rawSize: IntSize,
             timeoutMillis: Long,
+            maxImages: Int = RAW_MAX_IMAGES,
         ): AndroidRawSessionResources {
+            require(maxImages in 1..M4BurstLimits.MAX_FRAMES) { "RAW ImageReader maxImages exceeds bounded ownership" }
             val camera = (device as AndroidDeviceHandle).device
             val previewSurface = previewSurfaceToken as Surface
             val reader = ImageReader.newInstance(
                 rawSize.width,
                 rawSize.height,
                 ImageFormat.RAW_SENSOR,
-                RAW_MAX_IMAGES,
+                maxImages,
             )
             val readerCleanup = CameraResourceCleanup(reader::close)
             val configured = CompletableDeferred<CameraCaptureSession>()
@@ -1444,6 +1877,113 @@ class CameraSessionController private constructor(
                     callbackHandler,
                 )
                 return withTimeout(timeoutMillis) { paired.await() }
+            } finally {
+                resources.reader.setOnImageAvailableListener(null, null)
+                pairer.close()
+            }
+        }
+
+        suspend fun captureRawBurstPairs(
+            device: CameraDeviceHandle,
+            resources: AndroidRawSessionResources,
+            reservation: RawBurstReservation,
+            onImage: () -> Unit,
+            onResult: () -> Unit,
+        ): RawBurstPairSet<Image, CaptureResult> {
+            val camera = (device as AndroidDeviceHandle).device
+            val session = (resources.session as AndroidSessionHandle).session
+            val pairer = RawBurstTimestampPairer<Image, CaptureResult>(
+                expectedFrames = reservation.frameCount,
+                timeoutMillis = reservation.timeoutMillis,
+            )
+            val paired = CompletableDeferred<RawBurstPairSet<Image, CaptureResult>>()
+
+            fun fail(failure: Throwable) {
+                paired.completeExceptionally(failure)
+            }
+
+            fun publish(candidate: RawBurstPairSet<Image, CaptureResult>?) {
+                if (candidate == null) return
+                if (!paired.complete(candidate)) candidate.close()
+            }
+
+            resources.reader.setOnImageAvailableListener(
+                { source ->
+                    while (true) {
+                        val image = try {
+                            source.acquireNextImage()
+                        } catch (failure: Throwable) {
+                            fail(failure)
+                            break
+                        } ?: break
+                        if (paired.isCompleted) {
+                            image.close()
+                        } else {
+                            onImage()
+                            try {
+                                publish(pairer.offerImage(image.timestamp, image))
+                            } catch (failure: Throwable) {
+                                fail(failure)
+                                break
+                            }
+                        }
+                    }
+                },
+                callbackHandler,
+            )
+
+            try {
+                val requests = (0 until reservation.frameCount).map { ordinal ->
+                    camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                        addTarget(resources.rawSurface)
+                        setTag(ordinal)
+                    }.build()
+                }
+                session.captureBurst(
+                    requests,
+                    object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            session: CameraCaptureSession,
+                            request: CaptureRequest,
+                            result: TotalCaptureResult,
+                        ) {
+                            val ordinal = request.tag as? Int
+                            if (ordinal == null || ordinal !in 0 until reservation.frameCount) {
+                                fail(RawCapturePlatformException("RAW burst result has no valid request ordinal"))
+                                return
+                            }
+                            val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+                            if (timestamp == null || timestamp <= 0L) {
+                                fail(RawCapturePlatformException("RAW burst result has no valid SENSOR_TIMESTAMP"))
+                                return
+                            }
+                            onResult()
+                            try {
+                                publish(pairer.offerResult(timestamp, ordinal, result))
+                            } catch (failure: Throwable) {
+                                fail(failure)
+                            }
+                        }
+
+                        override fun onCaptureFailed(
+                            session: CameraCaptureSession,
+                            request: CaptureRequest,
+                            failure: CaptureFailure,
+                        ) {
+                            fail(
+                                RawCapturePlatformException(
+                                    "RAW burst failed reason=${failure.reason} sequence=${failure.sequenceId}",
+                                ),
+                            )
+                        }
+
+                        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+                            fail(RawCapturePlatformException("RAW burst sequence $sequenceId was aborted"))
+                        }
+                    },
+                    callbackHandler,
+                )
+                return withTimeout(reservation.timeoutMillis) { paired.await() }
             } finally {
                 resources.reader.setOnImageAvailableListener(null, null)
                 pairer.close()
