@@ -1,8 +1,9 @@
-# CamX2 imported baseline
+# CamX2 accepted baseline
 
-CamX2 was bootstrapped from the working CamX repository before the computational RAW architecture migration.
+CamX2 is based on the accepted CAMX-108 working frontier used by the computational RAW Architecture Revision 2.
 
 - Source repository: `sahid-code404/CamX`
-- Source branch at import: `rewrite/architecture-foundation`
-- Source commit: `79b84da86f87b94cb1c7080ead0ca4d81ad22e3e`
-- Import policy: preserve application behavior first; architecture work is layered on top without creating a second Camera2 owner or rewriting the working camera foundation.
+- Source branch: `phase/camx-108-one-shot-raw`
+- Source commit: `75f56063cd34f802fe1e404574b496412ba3955c`
+- Migration rule: preserve the working camera, AUX-lens, preview, one-shot RAW, OTA, diagnostics, cache, topology, and resource-ownership behavior while layering the EvidenceConstrainedImagingEngine architecture on top.
+- Sole Camera2 authority remains `CameraSessionController`.

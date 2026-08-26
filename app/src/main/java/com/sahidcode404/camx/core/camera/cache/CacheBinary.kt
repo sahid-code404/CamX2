@@ -9,9 +9,13 @@ import java.util.zip.CRC32
 
 internal object CacheBounds {
     const val HOT_PAYLOAD_BYTES = 32 * 1024
+    const val DEEP_PAYLOAD_BYTES = 64 * 1024
+    const val REFERENCE_PAYLOAD_BYTES = 4 * 1024
     const val TOPOLOGY_PAYLOAD_BYTES = 1024 * 1024
     const val ENVELOPE_BYTES = 20
     const val HOT_FILE_BYTES = HOT_PAYLOAD_BYTES + ENVELOPE_BYTES
+    const val DEEP_FILE_BYTES = DEEP_PAYLOAD_BYTES + ENVELOPE_BYTES
+    const val REFERENCE_FILE_BYTES = REFERENCE_PAYLOAD_BYTES + ENVELOPE_BYTES
     const val TOPOLOGY_FILE_BYTES = TOPOLOGY_PAYLOAD_BYTES + ENVELOPE_BYTES
 
     const val ENVIRONMENT_BYTES = 1024
@@ -23,7 +27,8 @@ internal object CacheBounds {
     const val PROFILES_PER_LENS = 32
     const val TOTAL_PROFILES = 128
     const val EVIDENCE = 256
-    const val ROUTE_SOURCES = 4
+    const val ROUTE_SOURCES = 5
+    const val DEEP_CANDIDATES = 128
     const val PREVIEW_STREAMS = 128
     const val FPS_RANGES = 64
     const val RAW_SIZES = 64
@@ -33,6 +38,8 @@ internal object CacheBounds {
 
 internal object CacheEnvelope {
     const val HOT_MAGIC = 0x434D5848 // CMXH
+    const val DEEP_MAGIC = 0x434D5844 // CMXD
+    const val REFERENCE_MAGIC = 0x434D5852 // CMXR
     const val TOPOLOGY_MAGIC = 0x434D5854 // CMXT
     const val FORMAT_VERSION = 1
 

@@ -214,7 +214,7 @@ class VisiblePreviewCoordinatorTest {
     }
 
     @Test
-    fun controllerFailureProjectsTypedErrorWithoutFakeFirstFrame() {
+    fun controllerRecoverableFailureWithoutCanonicalTargetDoesNotFakeFirstFrame() {
         val fixture = fixture()
         start(fixture)
 
@@ -224,8 +224,8 @@ class VisiblePreviewCoordinatorTest {
             failure = CameraInUse,
         )
 
-        val state = fixture.coordinator.uiState.value as VisiblePreviewUiState.Error
-        assertEquals(VisiblePreviewProblem.Controller(CameraInUse), state.problem)
+        assertEquals(VisiblePreviewUiState.WaitingForSurface, fixture.coordinator.uiState.value)
+        assertFalse((fixture.coordinator.uiState.value as? VisiblePreviewUiState.Previewing)?.firstFrameVerified == true)
     }
 
     @Test

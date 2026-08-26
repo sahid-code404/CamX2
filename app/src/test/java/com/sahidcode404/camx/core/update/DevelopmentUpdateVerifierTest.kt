@@ -19,76 +19,111 @@ class DevelopmentUpdateVerifierTest {
     )
 
     @Test
-    fun acceptsOnlyBoundForwardUpgrade() {
-        val manifest = manifest()
-        val downloaded = DownloadedApkIdentity(
-            applicationId = DevOtaTrust.APPLICATION_ID,
-            versionCode = 11L,
-            versionName = "0.1.0-dev.11",
-            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
-            sha256 = digest,
-            signingCertSha256 = DevOtaTrust.CERT_SHA256,
-        )
-        assertEquals(UpdateVerification.Accepted, DevelopmentUpdateVerifier.verify(manifest, installed, downloaded))
-    }
-
-    @Test
-    fun rejectsPathLikeAssetName() {
-        val downloaded = DownloadedApkIdentity(
-            applicationId = DevOtaTrust.APPLICATION_ID,
-            versionCode = 11L,
-            versionName = "0.1.0-dev.11",
-            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
-            sha256 = digest,
-            signingCertSha256 = DevOtaTrust.CERT_SHA256,
-        )
-        val result = DevelopmentUpdateVerifier.verify(
-            manifest().copy(apkAssetName = "../CamX-dev.apk"),
-            installed,
-            downloaded,
-        )
-        assertTrue(result is UpdateVerification.Rejected)
-        assertEquals(UpdateFailureCode.INVALID_ASSET_NAME, (result as UpdateVerification.Rejected).code)
-    }
-
-    @Test
-    fun rejectsSignerMismatch() {
-        val downloaded = DownloadedApkIdentity(
-            applicationId = DevOtaTrust.APPLICATION_ID,
-            versionCode = 11L,
-            versionName = "0.1.0-dev.11",
-            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
-            sha256 = digest,
-            signingCertSha256 = "b".repeat(64),
-        )
-        val result = DevelopmentUpdateVerifier.verify(manifest(), installed, downloaded)
+    fun validDownloadedApkIsAccepted() {
         assertEquals(
-            UpdateFailureCode.SIGNATURE_MISMATCH,
-            (result as UpdateVerification.Rejected).code,
+            UpdateVerification.Accepted,
+            DevelopmentUpdateVerifier.verify(manifest(), installed, downloaded()),
         )
     }
 
     @Test
-    fun rejectsDevelopmentArtifactThatRaisesApplicationBaseline() {
-        val downloaded = DownloadedApkIdentity(
-            applicationId = DevOtaTrust.APPLICATION_ID,
-            versionCode = 11L,
-            versionName = "0.1.0-dev.11",
-            minSdk = 24,
-            sha256 = digest,
-            signingCertSha256 = DevOtaTrust.CERT_SHA256,
+    fun packageMismatchIsRejected() {
+        assertRejected(
+            UpdateFailureCode.PACKAGE_MISMATCH,
+            downloaded().copy(applicationId = "other.app"),
         )
+    }
+
+    @Test
+    fun versionCodeMismatchIsRejected() {
+        assertRejected(
+            UpdateFailureCode.APK_VERSION_MISMATCH,
+            downloaded().copy(versionCode = 12L),
+        )
+    }
+
+    @Test
+    fun versionNameMismatchIsRejected() {
+        assertRejected(
+            UpdateFailureCode.APK_VERSION_MISMATCH,
+            downloaded().copy(versionName = "wrong"),
+        )
+    }
+
+    @Test
+    fun minSdkMismatchIsRejected() {
         val result = DevelopmentUpdateVerifier.verify(
             manifest().copy(minSdk = 24),
             installed,
-            downloaded,
+            downloaded().copy(minSdk = 24),
         )
-
         assertEquals(
             UpdateFailureCode.MIN_SDK_UNSUPPORTED,
             (result as UpdateVerification.Rejected).code,
         )
     }
+
+    @Test
+    fun shaMismatchIsRejected() {
+        assertRejected(
+            UpdateFailureCode.SHA256_MISMATCH,
+            downloaded().copy(sha256 = "b".repeat(64)),
+        )
+    }
+
+    @Test
+    fun signerMismatchIsRejected() {
+        assertRejected(
+            UpdateFailureCode.SIGNATURE_MISMATCH,
+            downloaded().copy(signingCertSha256 = "b".repeat(64)),
+        )
+    }
+
+    @Test
+    fun wrongOrPathLikeAssetNameIsRejected() {
+        for (name in listOf("Other.apk", "../CamX-dev.apk", "nested/CamX-dev.apk")) {
+            val result = DevelopmentUpdateVerifier.verify(
+                manifest().copy(apkAssetName = name),
+                installed,
+                downloaded(),
+            )
+            assertEquals(
+                UpdateFailureCode.INVALID_ASSET_NAME,
+                (result as UpdateVerification.Rejected).code,
+            )
+        }
+    }
+
+    @Test
+    fun finalVerifierStillRejectsNonUpgradeIfCalledOutsideCheckPipeline() {
+        val result = DevelopmentUpdateVerifier.verify(
+            manifest().copy(versionCode = installed.versionCode),
+            installed,
+            downloaded().copy(versionCode = installed.versionCode),
+        )
+        assertTrue(result is UpdateVerification.Rejected)
+        assertEquals(
+            UpdateFailureCode.NOT_AN_UPGRADE,
+            (result as UpdateVerification.Rejected).code,
+        )
+    }
+
+    private fun assertRejected(
+        code: UpdateFailureCode,
+        candidate: DownloadedApkIdentity,
+    ) {
+        val result = DevelopmentUpdateVerifier.verify(manifest(), installed, candidate)
+        assertEquals(code, (result as UpdateVerification.Rejected).code)
+    }
+
+    private fun downloaded() = DownloadedApkIdentity(
+        applicationId = DevOtaTrust.APPLICATION_ID,
+        versionCode = 11L,
+        versionName = "0.1.0-dev.11",
+        minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
+        sha256 = digest,
+        signingCertSha256 = DevOtaTrust.CERT_SHA256,
+    )
 
     private fun manifest() = DevOtaManifest(
         schema = DevOtaTrust.SCHEMA,
@@ -101,8 +136,8 @@ class DevelopmentUpdateVerifierTest {
         sha256 = digest,
         signingCertSha256 = DevOtaTrust.CERT_SHA256,
         gitSha = "a".repeat(40),
-        buildTimestamp = "2026-08-24T00:00:00Z",
-        changelog = "foundation",
+        buildTimestamp = "2026-08-25T00:00:00Z",
+        changelog = "CAMX-111",
         mandatory = false,
     )
 }

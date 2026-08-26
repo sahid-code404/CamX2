@@ -1,10 +1,10 @@
 package com.sahidcode404.camx.core.camera.topology
 
+import com.sahidcode404.camx.core.camera.discovery.CameraEvidenceSnapshot
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.CameraTransportId
-import com.sahidcode404.camx.core.camera.discovery.CameraEvidenceSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -16,14 +16,15 @@ class CameraTopologyRepositoryTest {
     private val secondEnvironment = CameraEnvironmentFingerprint("environment:second")
 
     @Test
-    fun newerReconciliationRejectsOlderPublicationInSameEnvironment() {
+    fun activeReconciliationAcceptsIncrementalPublicationsAndRejectsOlderPermit() {
         val repository = CameraTopologyRepository()
         val stalePermit = repository.beginReconciliation(firstEnvironment)
         val currentPermit = repository.beginReconciliation(firstEnvironment)
         assertFalse(repository.publish(topology(firstEnvironment, 10L), stalePermit))
         assertTrue(repository.publish(topology(firstEnvironment, 20L), currentPermit))
-        assertFalse(repository.publish(topology(firstEnvironment, 30L), currentPermit))
-        assertEquals(20L, repository.topology.value?.generatedAtElapsedRealtimeNs)
+        assertTrue(repository.publish(topology(firstEnvironment, 30L), currentPermit))
+        assertEquals(30L, repository.topology.value?.generatedAtElapsedRealtimeNs)
+        assertEquals(2L, repository.publicationCount())
     }
 
     @Test

@@ -1,6 +1,12 @@
 package com.sahidcode404.camx.core.camera.bootstrap
 
+import com.sahidcode404.camx.core.camera.diagnostics.CameraDisconnected
+import com.sahidcode404.camx.core.camera.diagnostics.CameraFailure
 import com.sahidcode404.camx.core.camera.diagnostics.CameraInUse
+import com.sahidcode404.camx.core.camera.diagnostics.LensSwitchDiagnostics
+import com.sahidcode404.camx.core.camera.diagnostics.MaximumCamerasInUse
+import com.sahidcode404.camx.core.camera.diagnostics.OpenTimeout
+import com.sahidcode404.camx.core.camera.diagnostics.PreviewTimeout
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraCapabilities
@@ -139,17 +145,92 @@ class VisiblePreviewLensSwitchTest {
     }
 
     @Test
-    fun switchFailureMarksOnlyTargetFailedAndExplicitRetryStartsAgain() {
+    fun retryableSwitchFailureDoesNotPoisonLensAndRetriesOnce() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("tele"))
-        val teleSelection = fixture.session.starts.last().selection
-        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(teleSelection, CameraInUse)
-        assertEquals(LensTestStatus.FAILED, fixture.status("tele"))
-        assertNotEquals(LensTestStatus.FAILED, fixture.status("main"))
-        val starts = fixture.session.starts.size
+        val startsAfterInitialAttempt = fixture.session.starts.size
+        val firstTeleSelection = fixture.session.starts.last().selection
+
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(firstTeleSelection, CameraInUse)
+
+        assertEquals(startsAfterInitialAttempt + 1, fixture.session.starts.size)
+        assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
+        assertNotEquals(LensTestStatus.FAILED, fixture.status("tele"))
+        assertEquals(1L, fixture.switchDiagnostics.value.transientRetryCount)
+    }
+
+    @Test
+    fun retryableFailureMatrixRetriesOnceThenRestoresLastVerifiedWithoutPoisoning() {
+        val failures: List<CameraFailure> = listOf(
+            CameraInUse,
+            MaximumCamerasInUse,
+            CameraDisconnected,
+            OpenTimeout,
+            PreviewTimeout,
+        )
+        failures.forEach { failure ->
+            assertTrue(failure.policy.automaticRetryPermitted)
+            val fixture = fixture()
+            fixture.startAndVerifyMain()
+            fixture.coordinator.selectLens(lens("tele"))
+            val firstAttempt = fixture.session.starts.last().selection
+            fixture.session.stateFlow.value = CameraEngineState.RecoverableError(firstAttempt, failure)
+            val retryAttempt = fixture.session.starts.last().selection
+            assertEquals(CameraRouteId("route:tele"), retryAttempt.routeId)
+            assertNotEquals(LensTestStatus.FAILED, fixture.status("tele"))
+
+            fixture.session.stateFlow.value = CameraEngineState.RecoverableError(retryAttempt, failure)
+
+            assertEquals(CameraRouteId("route:main"), fixture.session.starts.last().route.id)
+            assertNotEquals(LensTestStatus.FAILED, fixture.status("tele"))
+            assertEquals(1L, fixture.switchDiagnostics.value.transientRetryCount)
+            assertEquals(1L, fixture.switchDiagnostics.value.fallbackToLastVerifiedCount)
+            fixture.session.verifyCurrent()
+            assertEquals(LensTestStatus.VERIFIED, fixture.status("main"))
+
+            val beforeRetap = fixture.session.starts.size
+            fixture.coordinator.selectLens(lens("tele"))
+            assertEquals(beforeRetap + 1, fixture.session.starts.size)
+            assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
+        }
+    }
+
+    @Test
+    fun retryExhaustionWithoutLastVerifiedLeavesAnotherLensTapRecoverable() {
+        val fixture = fixture()
+        fixture.coordinator.setPermission(true)
+        fixture.coordinator.resume(DisplayRotation.ROTATION_0)
         fixture.coordinator.selectLens(lens("tele"))
+        val first = fixture.session.starts.last().selection
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(first, CameraInUse)
+        val retry = fixture.session.starts.last().selection
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(retry, CameraInUse)
+
+        assertEquals(VisiblePreviewUiState.WaitingForSurface, fixture.coordinator.uiState.value)
+        assertNotEquals(LensTestStatus.FAILED, fixture.status("tele"))
+        val starts = fixture.session.starts.size
+        fixture.coordinator.selectLens(lens("ultra"))
         assertEquals(starts + 1, fixture.session.starts.size)
+        assertEquals(CameraRouteId("route:ultra"), fixture.session.starts.last().route.id)
+    }
+
+    @Test
+    fun staleRecoverableErrorFromSupersededTargetCannotPoisonLatestTarget() {
+        val fixture = fixture()
+        fixture.startAndVerifyMain()
+        fixture.coordinator.selectLens(lens("ultra"))
+        val obsolete = fixture.session.starts.last().selection
+        fixture.coordinator.selectLens(lens("tele"))
+        val latestStarts = fixture.session.starts.size
+
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(obsolete, CameraInUse)
+
+        assertEquals(latestStarts, fixture.session.starts.size)
+        assertEquals(LensTestStatus.OPENING, fixture.status("tele"))
+        assertNotEquals(LensTestStatus.FAILED, fixture.status("ultra"))
+        fixture.session.verifyCurrent()
+        assertEquals(LensTestStatus.VERIFIED, fixture.status("tele"))
     }
 
     @Test
@@ -161,6 +242,34 @@ class VisiblePreviewLensSwitchTest {
         assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
         assertEquals(LensTestStatus.OPENING, fixture.status("tele"))
         assertNotEquals(LensTestStatus.VERIFIED, fixture.status("ultra"))
+    }
+
+    @Test
+    fun twentyRapidIntentsCoalesceBeforeSurfaceAndFinalTargetVerifies() {
+        val fixture = fixture()
+        fixture.startAndVerifyMain()
+        val oldIdentity = fixture.surface.identity
+        fixture.surface.invalidate(oldIdentity)
+        val startsBefore = fixture.session.starts.size
+        val intents = listOf(
+            "ultra", "tele", "front", "physicalA", "main",
+            "front", "ultra", "physicalB", "tele", "main",
+            "physicalA", "front", "ultra", "physicalB", "main",
+            "front", "physicalA", "ultra", "main", "tele",
+        )
+
+        intents.forEach { fixture.coordinator.selectLens(lens(it)) }
+        assertEquals(startsBefore, fixture.session.starts.size)
+
+        fixture.surface.publish(PreviewSurfaceIdentity(oldIdentity.value + 1L))
+
+        assertEquals(startsBefore + 1, fixture.session.starts.size)
+        assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
+        fixture.session.verifyCurrent()
+        assertEquals(LensTestStatus.VERIFIED, fixture.status("tele"))
+        assertTrue(fixture.switchDiagnostics.value.supersededIntentCount >= 15L)
+        assertTrue(fixture.switchDiagnostics.value.actualOpenCount <= 2L)
+        assertTrue(fixture.coordinator.lensItems.value.none { it.status == LensTestStatus.FAILED })
     }
 
     @Test
@@ -254,6 +363,7 @@ class VisiblePreviewLensSwitchTest {
         val surface: FakeSurfacePort,
         val session: FakeSessionPort,
         val events: MutableList<String>,
+        val switchDiagnostics: MutableStateFlow<LensSwitchDiagnostics>,
     ) {
         fun startAndVerifyMain() {
             coordinator.setPermission(true)
@@ -434,6 +544,7 @@ class VisiblePreviewLensSwitchTest {
         val surface = FakeSurfacePort(events)
         val session = FakeSessionPort(events)
         val topologyFlow = MutableStateFlow<CameraTopologySnapshot?>(topology)
+        val diagnostics = MutableStateFlow(LensSwitchDiagnostics())
         val mainRoute = topology.routes.single { it.id == CameraRouteId("route:main") }
         val coordinator = VisiblePreviewCoordinator(
             seedSource = SeedSource(mainRoute),
@@ -443,9 +554,10 @@ class VisiblePreviewLensSwitchTest {
             topology = topologyFlow,
             runtimeApiLevel = 35,
             settings = { SettingsSnapshot() },
+            switchDiagnosticsSink = { diagnostics.value = it },
             dispatcher = Dispatchers.Unconfined,
         )
-        return Fixture(coordinator, topology, topologyFlow, surface, session, events)
+        return Fixture(coordinator, topology, topologyFlow, surface, session, events, diagnostics)
     }
 
     private fun topology(specs: List<LensSpec>): CameraTopologySnapshot {

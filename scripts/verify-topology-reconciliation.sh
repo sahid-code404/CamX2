@@ -7,6 +7,7 @@ cd "$root"
 readonly topology_root="app/src/main/java/com/sahidcode404/camx/core/camera/topology"
 readonly resolver="$topology_root/CameraTopologyResolver.kt"
 readonly reconciler="$topology_root/PostFirstFrameTopologyReconciler.kt"
+readonly aux_orchestrator="$topology_root/PostFirstFrameAuxDiscoveryOrchestrator.kt"
 readonly graph="app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/VisiblePreviewGraph.kt"
 readonly ndk_adapter="native/core/src/discovery/android_ndk_advertised_metadata.cpp"
 readonly cmake="native/core/CMakeLists.txt"
@@ -47,12 +48,13 @@ for requirement in \
   'MAX_PROFILES = 128' \
   'MAX_CANONICAL_LENSES = 64' \
   'MAX_PROFILES_PER_LENS = 32' \
-  'MAX_PROVENANCE_SOURCES = 4' \
+  'MAX_PROVENANCE_SOURCES = 5' \
   'MAX_PREVIEW_STREAMS = 128' \
   'MAX_FPS_RANGES = 64' \
   'MAX_RAW_SIZES = 64' \
   'previousTrustedTopology' \
   'metadataConflicts' \
+  'clusterCanFormRoute' \
   'toRawBits()'; do
   require_fixed 'bounded deterministic resolver' "$requirement" "$resolver"
 done
@@ -67,8 +69,19 @@ for requirement in \
 done
 
 for requirement in \
+  'DeepAuxScanPolicy.decide' \
+  'DeepAuxScanState.HOT_ONLY' \
+  'DeepAuxScanState.FULL_RECONCILIATION' \
+  'boundedCameraMap(Level2Lane.values().toList(), 2)' \
+  'includeNearbyCandidates = !hotOnly' \
+  'includeLowNamespaceCandidates = !hotOnly'; do
+  require_fixed 'Checkpoint-C Level-2 to Level-4 orchestration' "$requirement" "$aux_orchestrator"
+done
+
+for requirement in \
   'AndroidAdvertisedCameraEvidenceBackend' \
   'NdkAdvertisedCameraEvidenceBackend' \
+  'PostFirstFrameAuxDiscoveryOrchestrator' \
   'state.firstFrameVerified' \
   'topologyReconciler.startAfterFirstFrame()'; do
   require_fixed 'visible-preview topology hook' "$requirement" "$graph"
@@ -90,10 +103,10 @@ reject 'session-owner dependency in topology reconciliation' \
   "$topology_root"
 reject 'device-specific topology routing' \
   'Build\.(?:MANUFACTURER|MODEL|BRAND|DEVICE|HARDWARE|SOC_MANUFACTURER|SOC_MODEL)|manufacturer|deviceModel|socModel|sensorVendor' \
-  "$resolver" "$reconciler"
+  "$resolver" "$reconciler" "$aux_orchestrator"
 reject 'numeric or string-shape camera ID role logic' \
   '(?:toIntOrNull|startsWith|endsWith|substring).*?(?:transport|camera|physical)|(?:transport|camera|physical).*?(?:toIntOrNull|startsWith|endsWith|substring)' \
-  "$resolver" "$reconciler"
+  "$resolver" "$reconciler" "$aux_orchestrator"
 reject 'native Camera NDK control plane' \
   '\bACameraManager_openCamera\b|\bACameraDevice\b|\bACameraCaptureSession\b|\bACaptureRequest\b' \
   "$ndk_adapter" native/core/src/discovery native/core/include/camx/ndk_advertised_metadata.hpp

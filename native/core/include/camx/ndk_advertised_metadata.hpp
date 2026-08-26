@@ -10,6 +10,7 @@
 namespace camx {
 
 inline constexpr std::size_t kNdkMaxCameraIds = 64U;
+inline constexpr std::size_t kNdkMaxDeepCandidates = 128U;
 inline constexpr std::size_t kNdkMaxFocalLengths = 16U;
 inline constexpr std::size_t kNdkMaxApertures = 16U;
 inline constexpr std::size_t kNdkMaxPreviewStreams = 128U;
@@ -38,10 +39,7 @@ struct NdkFpsRange final {
   bool operator==(const NdkFpsRange&) const = default;
 };
 
-/**
- * API-neutral normalized metadata record. Android Camera-NDK parsing happens in
- * the runtime adapter; collection/validation/encoding stay host-testable.
- */
+/** API-neutral normalized metadata used by advertised and bounded deep discovery. */
 struct NdkAdvertisedRecord final {
   std::string transport_id;
   std::int8_t facing = -1;  // -1 unknown, 0 front, 1 back, 2 external.
@@ -66,6 +64,10 @@ enum class NdkAdvertisedFailureKind : std::uint8_t {
   kMetadataUnavailable = 4,
   kMalformedMetadata = 5,
   kMetadataBoundExceeded = 6,
+  kAccessDenied = 7,
+  kServiceError = 8,
+  kCameraUnavailable = 9,
+  kInvalidOperation = 10,
 };
 
 struct NdkAdvertisedFailure final {
@@ -81,6 +83,16 @@ struct NdkAdvertisedReport final {
   bool operator==(const NdkAdvertisedReport&) const = default;
 };
 
+enum class NdkCandidateReadStatus : std::uint8_t {
+  kValidMetadata,
+  kUnavailable,
+  kAccessDenied,
+  kServiceError,
+  kCameraUnavailable,
+  kInvalidOperation,
+  kMalformedMetadata,
+};
+
 class NdkAdvertisedMetadataSource {
  public:
   virtual ~NdkAdvertisedMetadataSource() = default;
@@ -88,16 +100,28 @@ class NdkAdvertisedMetadataSource {
   [[nodiscard]] virtual bool runtime_available() const noexcept = 0;
   virtual bool camera_ids(std::vector<std::string>& output) noexcept = 0;
   virtual bool read(std::string_view transport_id, NdkAdvertisedRecord& output) noexcept = 0;
+
+  /** Candidate probing is metadata-only. Implementations may expose a more precise failure reason. */
+  virtual NdkCandidateReadStatus read_candidate(
+      std::string_view transport_id, NdkAdvertisedRecord& output) noexcept {
+    return read(transport_id, output) ? NdkCandidateReadStatus::kValidMetadata
+                                      : NdkCandidateReadStatus::kUnavailable;
+  }
 };
 
 [[nodiscard]] std::uint64_t StableNdkOpaqueKey(std::string_view value) noexcept;
 [[nodiscard]] NdkAdvertisedReport CollectNdkAdvertisedMetadata(
     NdkAdvertisedMetadataSource& source);
+[[nodiscard]] NdkAdvertisedReport CollectNdkCandidateMetadata(
+    NdkAdvertisedMetadataSource& source, const std::vector<std::string>& candidates);
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> EncodeNdkAdvertisedReport(
     const NdkAdvertisedReport& report);
 
-/** Android-only adapter implemented without strong Camera-NDK imports. */
+/** Android-only adapters implemented without strong Camera-NDK imports. */
 [[nodiscard]] std::optional<std::vector<std::uint8_t>>
 CollectAndroidNdkAdvertisedMetadata(std::int32_t android_api);
+[[nodiscard]] std::optional<std::vector<std::uint8_t>>
+CollectAndroidNdkCandidateMetadata(
+    std::int32_t android_api, const std::vector<std::string>& candidates);
 
 }  // namespace camx

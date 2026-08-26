@@ -17,7 +17,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,9 +31,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.sahidcode404.camx.R
-import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewProblem
+import com.sahidcode404.camx.core.camera.bootstrap.LensInventoryStatus
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewRenderSpec
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
+import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
 import com.sahidcode404.camx.core.camera.lens.CameraLensUiItem
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
@@ -45,13 +50,19 @@ fun CameraScreen(
     uiState: VisiblePreviewUiState,
     renderSpec: VisiblePreviewRenderSpec?,
     lensItems: List<CameraLensUiItem>,
+    auxAudit: AuxHardwareAuditSnapshot = AuxHardwareAuditSnapshot(),
+    inventoryStatus: LensInventoryStatus? = null,
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
+    onDeepRescan: () -> Unit = {},
+    onResetDiscoveryCache: () -> Unit = {},
     onSurfaceAvailable: (PreviewSurfaceBinding) -> Unit,
     onSurfaceDestroyed: (PreviewSurfaceIdentity) -> Unit,
     onOpenAppSettings: () -> Unit,
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
     val captureContentDescription = stringResource(R.string.capture_unavailable_content_description)
+    val revealPreviewSurface = shouldRevealPreviewSurface(uiState, renderSpec)
+    var showAuxAudit by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -66,6 +77,18 @@ fun CameraScreen(
             onSurfaceAvailable = onSurfaceAvailable,
             onSurfaceDestroyed = onSurfaceDestroyed,
         )
+
+        // Keep the SurfaceView and its identity alive while target fixed-size/geometry is applied.
+        // A neutral cover is used only after leaving the verified outgoing presentation and remains
+        // until the exact target first frame is verified, preventing stale frames from being shown
+        // under the target crop/rotation/mirror transform.
+        if (!revealPreviewSurface) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(CamXColors.Ink),
+            )
+        }
 
         if (!permissionGranted) {
             Column(
@@ -85,14 +108,13 @@ fun CameraScreen(
                 }
             }
         } else {
-            previewStatusText(uiState)?.let { status ->
-                Text(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 48.dp, start = 24.dp, end = 24.dp),
-                    text = status,
-                    color = CamXColors.TextPrimary,
-                )
+            TextButton(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 32.dp, end = 12.dp),
+                onClick = { showAuxAudit = true },
+            ) {
+                Text("AUX Audit")
             }
 
             if (lensItems.isNotEmpty()) {
@@ -131,6 +153,16 @@ fun CameraScreen(
         ) {
             Box(modifier = Modifier.size(1.dp))
         }
+
+        if (showAuxAudit) {
+            AuxHardwareAuditPanel(
+                audit = auxAudit,
+                inventoryStatus = inventoryStatus,
+                onClose = { showAuxAudit = false },
+                onDeepRescan = onDeepRescan,
+                onResetDiscoveryCache = onResetDiscoveryCache,
+            )
+        }
     }
 }
 
@@ -166,46 +198,17 @@ private fun LensTestButton(
                     color = CamXColors.TextSecondary,
                 )
             }
-            Text(
-                text = statusLabel,
-                color = if (item.status == LensTestStatus.VERIFIED) {
-                    CamXColors.TextPrimary
-                } else {
-                    CamXColors.TextSecondary
-                },
-            )
         }
     }
 }
 
+/** Lifecycle state remains available to accessibility and AUX Audit, but is not visual Camera UI. */
 @Composable
 private fun lensStatusText(status: LensTestStatus): String = when (status) {
-    LensTestStatus.ADVERTISED -> stringResource(R.string.lens_status_advertised)
+    LensTestStatus.ADVERTISED,
+    LensTestStatus.AVAILABLE,
+    -> stringResource(R.string.lens_status_advertised)
     LensTestStatus.OPENING -> stringResource(R.string.lens_status_opening)
     LensTestStatus.VERIFIED -> stringResource(R.string.lens_status_verified)
     LensTestStatus.FAILED -> stringResource(R.string.lens_status_failed)
-}
-
-@Composable
-private fun previewStatusText(state: VisiblePreviewUiState): String? = when (state) {
-    VisiblePreviewUiState.WaitingForPermission -> null
-    VisiblePreviewUiState.Starting -> stringResource(R.string.camera_preview_starting)
-    VisiblePreviewUiState.WaitingForSurface -> stringResource(R.string.camera_preview_waiting_surface)
-    is VisiblePreviewUiState.Opening -> stringResource(R.string.camera_preview_opening)
-    is VisiblePreviewUiState.Previewing -> if (state.firstFrameVerified) null
-    else stringResource(R.string.camera_preview_waiting_first_frame)
-    is VisiblePreviewUiState.Unavailable -> when (state.problem) {
-        VisiblePreviewProblem.NoCredibleSeed -> stringResource(R.string.camera_preview_no_camera)
-        is VisiblePreviewProblem.Capability -> stringResource(R.string.camera_preview_capability_unavailable)
-        is VisiblePreviewProblem.Policy -> stringResource(R.string.camera_preview_unsupported)
-        is VisiblePreviewProblem.Controller -> stringResource(R.string.camera_preview_camera_error)
-        is VisiblePreviewProblem.Startup -> stringResource(R.string.camera_preview_startup_error)
-    }
-    is VisiblePreviewUiState.Error -> when (state.problem) {
-        VisiblePreviewProblem.NoCredibleSeed -> stringResource(R.string.camera_preview_no_camera)
-        is VisiblePreviewProblem.Capability -> stringResource(R.string.camera_preview_capability_unavailable)
-        is VisiblePreviewProblem.Policy -> stringResource(R.string.camera_preview_unsupported)
-        is VisiblePreviewProblem.Controller -> stringResource(R.string.camera_preview_camera_error)
-        is VisiblePreviewProblem.Startup -> stringResource(R.string.camera_preview_startup_error)
-    }
 }

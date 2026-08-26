@@ -1,6 +1,7 @@
 package com.sahidcode404.camx.core.camera.cache
 
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
+import com.sahidcode404.camx.core.camera.model.CameraSchemaVersions
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.zip.CRC32
@@ -109,7 +110,29 @@ class CacheCodecTest {
         assertTrue(
             TopologyCacheCodec.decode(encoded.copyOf(encoded.size - 3), TEST_ENVIRONMENT) is CacheRead.Corrupt,
         )
-        assertEquals(CacheRead.Miss, TopologyCacheCodec.decode(withInt(encoded, 8, 2), TEST_ENVIRONMENT))
+        assertEquals(CacheRead.Miss, TopologyCacheCodec.decode(withInt(encoded, 8, 99), TEST_ENVIRONMENT))
+    }
+
+    @Test
+    fun parity4RejectsLegacyTopologySchemaWithoutInvalidatingIndependentCaches() {
+        assertEquals(2, CameraSchemaVersions.TOPOLOGY)
+        assertEquals(1, CameraSchemaVersions.HOT_START)
+        assertEquals(1, CameraSchemaVersions.DEEP_DISCOVERY)
+        assertEquals(1, CameraSchemaVersions.LENS_REFERENCE)
+
+        val current = TopologyCacheCodec.encode(representativeTopology())
+        val legacy = withInt(current, 8, 1)
+        assertEquals(CacheRead.Miss, TopologyCacheCodec.decode(legacy, TEST_ENVIRONMENT))
+
+        val inspection = TopologyCacheMigrationInspector.inspectBytes(legacy, TEST_ENVIRONMENT)
+        assertEquals(TopologyCacheInspectionStatus.INCOMPATIBLE_SCHEMA, inspection.status)
+        assertEquals(1, inspection.storedSchema)
+        assertEquals(true, inspection.environmentCompatible)
+
+        val currentInspection = TopologyCacheMigrationInspector.inspectBytes(current, TEST_ENVIRONMENT)
+        assertEquals(TopologyCacheInspectionStatus.COMPATIBLE, currentInspection.status)
+        assertEquals(CameraSchemaVersions.TOPOLOGY, currentInspection.storedSchema)
+        assertEquals(true, currentInspection.environmentCompatible)
     }
 
     @Test

@@ -38,9 +38,12 @@ reject 'reflection or JSON serializer' \
 for requirement in \
   'HotStartCacheCodec' \
   'TopologyCacheCodec' \
+  'DeepDiscoveryKnowledgeCodec' \
   'CRC32' \
   'HOT_PAYLOAD_BYTES = 32 * 1024' \
+  'DEEP_PAYLOAD_BYTES = 64 * 1024' \
   'TOPOLOGY_PAYLOAD_BYTES = 1024 * 1024' \
+  'DEEP_CANDIDATES = 128' \
   'output.fd.sync()' \
   'Os.rename('; do
   if ! rg --fixed-strings --quiet "$requirement" "$cache_root"; then

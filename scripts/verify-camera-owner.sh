@@ -76,13 +76,23 @@ fi
 
 for requirement in \
   'class CameraStateMutationGate' \
+  'private val mutex = Mutex()' \
   'suspend fun <T> mutate(block: () -> T): T' \
-  'mutex.withLock { block() }'; do
+  'if (currentCoroutineContext().isActive)' \
+  'mutex.lock()' \
+  'withContext(NonCancellable) { mutex.lock() }' \
+  'withContext(NonCancellable)' \
+  'withContext(dispatcher) { block() }' \
+  'mutex.unlock()'; do
   if ! rg --fixed-strings --quiet "$requirement" "$mutation_gate"; then
     echo "Camera mutation-gate requirement missing: $requirement" >&2
     failures=$((failures + 1))
   fi
 done
+if ! rg --multiline --pcre2 --quiet 'return\s+try\s*\{[\s\S]*withContext\(NonCancellable\)[\s\S]*withContext\(dispatcher\)\s*\{\s*block\(\)\s*\}[\s\S]*\}\s*finally\s*\{[\s\S]*mutex\.unlock\(\)' "$mutation_gate"; then
+  echo 'Camera mutation-gate requirement missing: committed mutation must run NonCancellable on the camera dispatcher and unlock in finally.' >&2
+  failures=$((failures + 1))
+fi
 if rg --line-number 'mutate\s*\(\s*block\s*:\s*suspend|block\s*:\s*suspend\s*\(' "$mutation_gate"; then
   echo 'Camera ownership violation: authoritative mutation block must remain non-suspending.' >&2
   failures=$((failures + 1))

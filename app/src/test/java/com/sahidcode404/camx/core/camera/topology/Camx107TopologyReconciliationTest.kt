@@ -127,15 +127,24 @@ class Camx107TopologyReconciliationTest {
     }
 
     @Test
-    fun `conflicting alias is split instead of silently merged`() {
+    fun `conflicting providers on one exact transport remain one profile`() {
         val java = evidence("same", focal = 4.2f)
         val ndk = evidence("same", source = CameraRouteSource.NDK_ADVERTISED, focal = 9.0f)
         val topology = resolve(
             snapshot(CameraRouteSource.JAVA_PUBLIC, java),
             snapshot(CameraRouteSource.NDK_ADVERTISED, ndk),
         )
-        assertEquals(2, topology.routes.size)
-        assertTrue(topology.routes.all { it.sources.size == 1 })
+        assertEquals(1, topology.routes.size)
+        assertEquals(1, topology.canonicalLenses.size)
+        assertEquals(1, topology.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(
+            setOf(CameraRouteSource.JAVA_PUBLIC, CameraRouteSource.NDK_ADVERTISED),
+            topology.routes.single().sources,
+        )
+        assertEquals(
+            setOf(listOf(4.2f), listOf(9.0f)),
+            topology.evidence.map { it.focalLengthsMillimetres }.toSet(),
+        )
         assertInvariants(topology)
     }
 
@@ -212,27 +221,49 @@ class Camx107TopologyReconciliationTest {
     }
 
     @Test
-    fun `conflicting facing on exact alias is conservative`() {
+    fun `conflicting facing providers on one exact transport remain one profile deterministically`() {
         val back = evidence("same", facing = LensFacing.BACK)
         val front = evidence("same", source = CameraRouteSource.NDK_ADVERTISED, facing = LensFacing.FRONT)
-        val topology = resolve(
+        val forward = resolve(
             snapshot(CameraRouteSource.JAVA_PUBLIC, back),
             snapshot(CameraRouteSource.NDK_ADVERTISED, front),
         )
-        assertEquals(2, topology.routes.size)
+        val reverse = resolve(
+            snapshot(CameraRouteSource.NDK_ADVERTISED, front),
+            snapshot(CameraRouteSource.JAVA_PUBLIC, back),
+        )
+        assertEquals(1, forward.routes.size)
+        assertEquals(1, forward.canonicalLenses.size)
+        assertEquals(1, forward.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(
+            setOf(CameraRouteSource.JAVA_PUBLIC, CameraRouteSource.NDK_ADVERTISED),
+            forward.routes.single().sources,
+        )
+        assertEquals(LensFacing.UNKNOWN, forward.canonicalLenses.single().facing)
+        assertEquals(forward, reverse)
+        assertInvariants(forward)
     }
 
     @Test
-    fun `conflicting array dimensions on exact alias are conservative`() {
+    fun `small array variation on one exact transport remains one profile`() {
         val first = evidence("same", active = IntSize(4000, 3000))
         val second = evidence("same", source = CameraRouteSource.NDK_ADVERTISED, active = IntSize(3998, 2998))
-        assertEquals(
-            2,
-            resolve(
-                snapshot(CameraRouteSource.JAVA_PUBLIC, first),
-                snapshot(CameraRouteSource.NDK_ADVERTISED, second),
-            ).routes.size,
+        val topology = resolve(
+            snapshot(CameraRouteSource.JAVA_PUBLIC, first),
+            snapshot(CameraRouteSource.NDK_ADVERTISED, second),
         )
+        assertEquals(1, topology.routes.size)
+        assertEquals(1, topology.canonicalLenses.size)
+        assertEquals(1, topology.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(
+            setOf(CameraRouteSource.JAVA_PUBLIC, CameraRouteSource.NDK_ADVERTISED),
+            topology.routes.single().sources,
+        )
+        assertEquals(
+            setOf(IntSize(4000, 3000), IntSize(3998, 2998)),
+            topology.evidence.mapNotNull { it.activeArray }.toSet(),
+        )
+        assertInvariants(topology)
     }
 
     @Test
@@ -244,12 +275,25 @@ class Camx107TopologyReconciliationTest {
     }
 
     @Test
-    fun `similar opaque ids remain separate`() {
-        val topology = resolve(
+    fun `opaque id text neither merges nor separates optical lenses`() {
+        val strongAliases = resolve(
             snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("camera-1"), evidence("camera-10")),
         )
-        assertEquals(2, topology.routes.size)
-        assertEquals(2, topology.canonicalLenses.size)
+        assertEquals(2, strongAliases.routes.size)
+        assertEquals(2, strongAliases.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(1, strongAliases.canonicalLenses.size)
+
+        val distinctOptics = resolve(
+            snapshot(
+                CameraRouteSource.JAVA_PUBLIC,
+                evidence("camera-1", focal = 4.2f),
+                evidence("camera-10", focal = 8.0f),
+            ),
+        )
+        assertEquals(2, distinctOptics.routes.size)
+        assertEquals(2, distinctOptics.canonicalLenses.size)
+        assertInvariants(strongAliases)
+        assertInvariants(distinctOptics)
     }
 
     @Test
@@ -296,13 +340,15 @@ class Camx107TopologyReconciliationTest {
     }
 
     @Test
-    fun `one to many previous canonical preservation is conflict safe`() {
+    fun `minor live geometry change preserves strongly matching canonical lens`() {
         val related = physical("logical", "member", 4.2f)
         val direct = evidence("member", focal = 4.2f)
         val previous = resolve(
             snapshot(CameraRouteSource.JAVA_PHYSICAL, related),
             snapshot(CameraRouteSource.JAVA_PUBLIC, direct),
         )
+        assertEquals(2, previous.routes.size)
+        assertEquals(2, previous.canonicalLenses.flatMap { it.profiles }.size)
         assertEquals(1, previous.canonicalLenses.size)
         val oldFingerprint = previous.canonicalLenses.single().fingerprint
 
@@ -312,8 +358,11 @@ class Camx107TopologyReconciliationTest {
             snapshot(CameraRouteSource.JAVA_PUBLIC, changedDirect),
             previous = previous,
         )
-        assertEquals(2, current.canonicalLenses.size)
-        assertTrue(current.canonicalLenses.count { it.fingerprint == oldFingerprint } <= 1)
+        assertEquals(2, current.routes.size)
+        assertEquals(2, current.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(1, current.canonicalLenses.size)
+        assertEquals(oldFingerprint, current.canonicalLenses.single().fingerprint)
+        assertInvariants(current)
     }
 
     @Test
@@ -347,14 +396,28 @@ class Camx107TopologyReconciliationTest {
     }
 
     @Test
-    fun `exact float representation prevents lossy canonical collapse`() {
+    fun `tiny provider float drift preserves optical alias while material sensor change separates`() {
         val related = physical("logical", "member", 4.2f).copy(sensorPhysicalWidthMillimetres = 5.60001f)
         val direct = evidence("member", focal = 4.2f, sensorWidth = 5.60002f)
         val topology = resolve(
             snapshot(CameraRouteSource.JAVA_PHYSICAL, related),
             snapshot(CameraRouteSource.JAVA_PUBLIC, direct),
         )
-        assertEquals(2, topology.canonicalLenses.size)
+        assertEquals(2, topology.routes.size)
+        assertEquals(2, topology.canonicalLenses.flatMap { it.profiles }.size)
+        assertEquals(1, topology.canonicalLenses.size)
+        assertInvariants(topology)
+
+        val materiallyDifferent = resolve(
+            snapshot(
+                CameraRouteSource.JAVA_PUBLIC,
+                evidence("sensor-a", focal = 4.2f, sensorWidth = 5.6f),
+                evidence("sensor-b", focal = 4.2f, sensorWidth = 6.4f),
+            ),
+        )
+        assertEquals(2, materiallyDifferent.routes.size)
+        assertEquals(2, materiallyDifferent.canonicalLenses.size)
+        assertInvariants(materiallyDifferent)
     }
 
     @Test

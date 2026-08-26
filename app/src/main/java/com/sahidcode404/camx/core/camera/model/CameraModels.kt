@@ -7,6 +7,7 @@ enum class CameraRouteSource {
     JAVA_PHYSICAL,
     NDK_ADVERTISED,
     NDK_DEEP,
+    JAVA_DEEP_PROBED,
 }
 
 enum class LensFacing {

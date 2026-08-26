@@ -11,25 +11,38 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewGraph
+import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
 import com.sahidcode404.camx.core.camera.model.DisplayRotation
+import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModel
+import com.sahidcode404.camx.core.update.DevelopmentUpdateViewModelFactory
 import com.sahidcode404.camx.feature.camera.CameraScreen
+import com.sahidcode404.camx.feature.update.DevelopmentUpdatesOverlay
 import com.sahidcode404.camx.ui.theme.CamXTheme
 
 class MainActivity : ComponentActivity() {
     private var cameraPermissionGranted by mutableStateOf(false)
     private lateinit var visiblePreviewGraph: VisiblePreviewGraph
+    private lateinit var updateViewModel: DevelopmentUpdateViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         visiblePreviewGraph = VisiblePreviewGraph(this)
+        updateViewModel = ViewModelProvider(
+            this,
+            DevelopmentUpdateViewModelFactory(this),
+        )[DevelopmentUpdateViewModel::class.java]
         cameraPermissionGranted = hasCameraPermission()
         visiblePreviewGraph.coordinator.setPermission(cameraPermissionGranted)
         enableEdgeToEdge()
@@ -39,6 +52,9 @@ class MainActivity : ComponentActivity() {
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
                 val lensItems by visiblePreviewGraph.coordinator.lensItems.collectAsState()
+                val auxAudit by visiblePreviewGraph.auxAudit.collectAsState()
+                val lensInventoryStatus by visiblePreviewGraph.lensInventoryStatus.collectAsState()
+                val updateState by updateViewModel.state.collectAsState()
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -50,18 +66,39 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     if (!cameraPermissionGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
                 }
+                LaunchedEffect(uiState) {
+                    val preview = uiState as? VisiblePreviewUiState.Previewing
+                    if (preview?.firstFrameVerified == true) {
+                        updateViewModel.onFirstVerifiedFrame()
+                    }
+                }
 
-                CameraScreen(
-                    permissionGranted = cameraPermissionGranted,
-                    showSettingsAction = requestCompleted && !cameraPermissionGranted,
-                    uiState = uiState,
-                    renderSpec = renderSpec,
-                    lensItems = lensItems,
-                    onLensSelected = visiblePreviewGraph.coordinator::selectLens,
-                    onSurfaceAvailable = visiblePreviewGraph::publishSurface,
-                    onSurfaceDestroyed = visiblePreviewGraph::surfaceDestroyed,
-                    onOpenAppSettings = ::openAppSettings,
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    CameraScreen(
+                        permissionGranted = cameraPermissionGranted,
+                        showSettingsAction = requestCompleted && !cameraPermissionGranted,
+                        uiState = uiState,
+                        renderSpec = renderSpec,
+                        lensItems = lensItems,
+                        auxAudit = auxAudit,
+                        inventoryStatus = lensInventoryStatus,
+                        onLensSelected = visiblePreviewGraph.coordinator::selectLens,
+                        onDeepRescan = { visiblePreviewGraph.requestDeepRescan() },
+                        onResetDiscoveryCache = visiblePreviewGraph::resetDiscoveryCache,
+                        onSurfaceAvailable = visiblePreviewGraph::publishSurface,
+                        onSurfaceDestroyed = visiblePreviewGraph::surfaceDestroyed,
+                        onOpenAppSettings = ::openAppSettings,
+                    )
+                    DevelopmentUpdatesOverlay(
+                        enabled = updateViewModel.enabled,
+                        installed = updateViewModel.installedVersion,
+                        state = updateState,
+                        onCheck = updateViewModel::checkManually,
+                        onDownload = updateViewModel::downloadAvailable,
+                        onCancel = updateViewModel::cancel,
+                        onInstall = updateViewModel::installReadyUpdate,
+                    )
+                }
             }
         }
     }
@@ -73,6 +110,7 @@ class MainActivity : ComponentActivity() {
             visiblePreviewGraph.coordinator.setPermission(cameraPermissionGranted)
             visiblePreviewGraph.coordinator.resume(currentDisplayRotation())
         }
+        if (::updateViewModel.isInitialized) updateViewModel.onHostResumed()
     }
 
     override fun onPause() {

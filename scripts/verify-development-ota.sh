@@ -8,8 +8,14 @@ readonly workflow=".github/workflows/dev-ota.yml"
 readonly expected_file="tools/dev-signing/EXPECTED_CERT_SHA256"
 readonly encoded_signer="tools/dev-signing/camx-dev.jks.b64"
 readonly verifier="app/src/main/java/com/sahidcode404/camx/core/update/verification/DevelopmentUpdateVerifier.kt"
+readonly update_root="app/src/main/java/com/sahidcode404/camx/core/update"
+readonly update_repository="$update_root/UpdateRepository.kt"
+readonly update_network="$update_root/DevelopmentUpdateNetwork.kt"
+readonly update_store="$update_root/UpdateFileStore.kt"
+readonly dev_manifest="app/src/devOta/AndroidManifest.xml"
 
-for file in "$workflow" "$expected_file" "$encoded_signer" "$verifier"; do
+for file in "$workflow" "$expected_file" "$encoded_signer" "$verifier" \
+  "$update_repository" "$update_network" "$update_store" "$dev_manifest"; do
   test -s "$file" || { echo "Development OTA file missing: $file" >&2; exit 1; }
 done
 
@@ -85,5 +91,76 @@ for literal in 'class VerifiedApk private constructor' 'revalidateForInstall()' 
     exit 1
   }
 done
+
+for literal in \
+  'https://github.com/sahid-code404/CamX/releases/download/dev-latest/dev-manifest.json' \
+  'https://github.com/sahid-code404/CamX/releases/download/dev-latest/CamX-dev.apk' \
+  'const val CONNECT_TIMEOUT_MILLIS = 10_000' \
+  'const val READ_TIMEOUT_MILLIS = 20_000' \
+  'const val MAX_REDIRECTS = 5'; do
+  rg --fixed-strings --quiet "$literal" "$update_network" || {
+    echo "CAMX-111 fixed network contract missing: $literal" >&2
+    exit 1
+  }
+done
+
+for literal in \
+  'suspend fun checkAfterFirstFrame()' \
+  'suspend fun checkManually()' \
+  'suspend fun downloadAvailable()' \
+  'fun cancel()' \
+  'FirstPreviewGate' \
+  'Dispatchers.IO' \
+  '${DevOtaTrust.APK_ASSET_NAME}.part'; do
+  rg --fixed-strings --quiet "$literal" "$update_root" || {
+    echo "CAMX-111 repository contract missing: $literal" >&2
+    exit 1
+  }
+done
+
+for permission in \
+  'android.permission.INTERNET' \
+  'android.permission.REQUEST_INSTALL_PACKAGES'; do
+  rg --fixed-strings --quiet "$permission" "$dev_manifest" || {
+    echo "devOta manifest permission missing: $permission" >&2
+    exit 1
+  }
+done
+
+for permission in \
+  'android.permission.INTERNET' \
+  'android.permission.REQUEST_INSTALL_PACKAGES'; do
+  if rg --fixed-strings --quiet "$permission" app/src/main/AndroidManifest.xml; then
+    echo "$permission must stay scoped to the devOta variant." >&2
+    exit 1
+  fi
+done
+
+rg --fixed-strings --quiet 'BuildConfig.OTA_CHANNEL == DevOtaTrust.CHANNEL' \
+  "$update_root/DevelopmentUpdateViewModel.kt" || {
+  echo 'CAMX-111 must remain gated to the devOta development channel.' >&2
+  exit 1
+}
+
+if rg --line-number '^import com\.sahidcode404\.camx\.core\.camera' "$update_root" --glob '*.kt'; then
+  echo 'Development OTA core must not depend on camera topology/session types.' >&2
+  exit 1
+fi
+
+resume_body="$(awk '
+  /^[[:space:]]*fun onHostResumed\(\)/ { capture = 1 }
+  capture && /^[[:space:]]*override fun onCleared\(\)/ { exit }
+  capture { print }
+' "$update_root/DevelopmentUpdateViewModel.kt")"
+test -n "$resume_body" || { echo 'Could not isolate OTA onHostResumed().' >&2; exit 1; }
+if printf '%s\n' "$resume_body" | rg --fixed-strings --quiet 'installReadyUpdate()'; then
+  echo 'Returning from unknown-source settings must not auto-launch installation.' >&2
+  exit 1
+fi
+
+if rg --line-number '\b(Service|ForegroundService|JobService|WorkManager)\b' "$update_root" --glob '*.kt'; then
+  echo 'Development OTA must not introduce a background service/worker.' >&2
+  exit 1
+fi
 
 echo "Development OTA verification passed (signer $expected)."

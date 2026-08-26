@@ -4,12 +4,19 @@ import android.system.Os
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.HotStartSnapshot
+import com.sahidcode404.camx.core.camera.model.StableLensReferenceSnapshot
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 
-/** API-23-safe two-file persistence. Hot and topology records never depend on each other's decode. */
+enum class DiscoveryCacheResetResult {
+    SUCCESS,
+    FAILED,
+    NOTHING_TO_RESET,
+}
+
+/** API-23-safe atomic persistence for hot, topology, lens-reference, and bounded deep-discovery records. */
 class AtomicCameraCachePersistence internal constructor(
     private val directory: File,
     private val fileSystem: CacheFileSystem = RealCacheFileSystem,
@@ -21,20 +28,96 @@ class AtomicCameraCachePersistence internal constructor(
 
     override suspend fun readTopology(
         environment: CameraEnvironmentFingerprint,
-    ): CacheRead<CameraTopologySnapshot> =
-        readBounded(topologyFile, CacheBounds.TOPOLOGY_FILE_BYTES) {
+    ): CacheRead<CameraTopologySnapshot> {
+        val inspection = inspectTopologyThroughFileSystem(environment)
+        TopologyCacheMigrationAudit.recordInspection(inspection)
+        val result = readBounded(topologyFile, CacheBounds.TOPOLOGY_FILE_BYTES) {
             TopologyCacheCodec.decode(it, environment)
+        }
+        TopologyCacheMigrationAudit.recordRead(result)
+        return result
+    }
+
+    internal suspend fun readStableLensReference(
+        environment: CameraEnvironmentFingerprint,
+    ): CacheRead<StableLensReferenceSnapshot> =
+        readBounded(referenceFile, CacheBounds.REFERENCE_FILE_BYTES) {
+            StableLensReferenceCacheCodec.decode(it, environment)
+        }
+
+    internal suspend fun readDeepKnowledgeInternal(
+        environment: CameraEnvironmentFingerprint,
+    ): CacheRead<DeepDiscoveryKnowledge> =
+        readBounded(deepFile, CacheBounds.DEEP_FILE_BYTES) {
+            DeepDiscoveryKnowledgeCodec.decode(it, environment)
         }
 
     override suspend fun writeHot(snapshot: HotStartSnapshot): CacheWrite =
         encodeAndWrite(hotFile, hotTempFile) { HotStartCacheCodec.encode(snapshot) }
 
-    override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite =
-        encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
+    override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite {
+        val result = encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
+        TopologyCacheMigrationAudit.recordWrite(result)
+        return result
+    }
+
+    internal suspend fun writeStableLensReference(snapshot: StableLensReferenceSnapshot): CacheWrite =
+        encodeAndWrite(referenceFile, referenceTempFile) { StableLensReferenceCacheCodec.encode(snapshot) }
+
+    internal suspend fun writeDeepKnowledgeInternal(knowledge: DeepDiscoveryKnowledge): CacheWrite =
+        encodeAndWrite(deepFile, deepTempFile) { DeepDiscoveryKnowledgeCodec.encode(knowledge) }
+
+    /** Clears discovery evidence only. Stable user/reference identity and the hot preview cache survive. */
+    internal suspend fun resetDiscoveryCaches(): DiscoveryCacheResetResult {
+        val targets = listOf(topologyFile, topologyTempFile, deepFile, deepTempFile)
+        return try {
+            val existing = targets.filter(fileSystem::exists)
+            if (existing.isEmpty()) return DiscoveryCacheResetResult.NOTHING_TO_RESET
+            if (existing.all(fileSystem::delete)) {
+                DiscoveryCacheResetResult.SUCCESS
+            } else {
+                DiscoveryCacheResetResult.FAILED
+            }
+        } catch (_: Exception) {
+            DiscoveryCacheResetResult.FAILED
+        }
+    }
+
+    private fun inspectTopologyThroughFileSystem(
+        environment: CameraEnvironmentFingerprint,
+    ): TopologyCacheInspection {
+        return try {
+            if (!fileSystem.exists(topologyFile)) {
+                return TopologyCacheInspection(TopologyCacheInspectionStatus.ABSENT)
+            }
+            val length = fileSystem.length(topologyFile)
+            if (length <= 0L || length > CacheBounds.TOPOLOGY_FILE_BYTES.toLong()) {
+                return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+            }
+            val bytes = ByteArray(length.toInt())
+            fileSystem.openInput(topologyFile).use { input ->
+                var offset = 0
+                while (offset < bytes.size) {
+                    val read = input.read(bytes, offset, bytes.size - offset)
+                    if (read < 0) return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+                    if (read == 0) continue
+                    offset += read
+                }
+                if (input.read() != -1) return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+            }
+            TopologyCacheMigrationInspector.inspectBytes(bytes, environment)
+        } catch (_: Exception) {
+            TopologyCacheInspection(TopologyCacheInspectionStatus.IO_FAILURE)
+        }
+    }
 
     private val hotFile: File get() = File(directory, HOT_FILE_NAME)
+    private val deepFile: File get() = File(directory, DEEP_FILE_NAME)
+    private val referenceFile: File get() = File(directory, REFERENCE_FILE_NAME)
     private val topologyFile: File get() = File(directory, TOPOLOGY_FILE_NAME)
     private val hotTempFile: File get() = File(directory, "$HOT_FILE_NAME.tmp")
+    private val deepTempFile: File get() = File(directory, "$DEEP_FILE_NAME.tmp")
+    private val referenceTempFile: File get() = File(directory, "$REFERENCE_FILE_NAME.tmp")
     private val topologyTempFile: File get() = File(directory, "$TOPOLOGY_FILE_NAME.tmp")
 
     private fun <T> readBounded(
@@ -112,6 +195,8 @@ class AtomicCameraCachePersistence internal constructor(
 
     private companion object {
         const val HOT_FILE_NAME = "camx-hot.cache"
+        const val DEEP_FILE_NAME = "camx-deep.cache"
+        const val REFERENCE_FILE_NAME = "camx-lens-reference.cache"
         const val TOPOLOGY_FILE_NAME = "camx-topology.cache"
     }
 }

@@ -2,7 +2,18 @@ package com.sahidcode404.camx.core.camera.model
 
 object CameraSchemaVersions {
     const val HOT_START = 1
-    const val TOPOLOGY = 1
+    // PARITY-4: v1 topology was produced by pre-CameX-parity canonicalization and must never seed UI.
+    const val TOPOLOGY = 2
+    const val DEEP_DISCOVERY = 1
+    const val LENS_REFERENCE = 1
+}
+
+data class StableLensReferenceSnapshot(
+    val schema: Int,
+    val environment: CameraEnvironmentFingerprint,
+    val canonicalFingerprint: CanonicalLensFingerprint,
+) {
+    init { require(schema > 0) { "Lens-reference schema must be positive" } }
 }
 
 data class HotStartSnapshot(

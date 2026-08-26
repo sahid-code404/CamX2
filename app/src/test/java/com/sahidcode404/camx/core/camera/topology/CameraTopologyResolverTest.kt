@@ -83,13 +83,14 @@ class CameraTopologyResolverTest {
     }
 
     @Test
-    fun identicalMetadataWithoutRelationshipRemainsSeparate() {
+    fun identicalStrongMetadataWithoutRelationshipGroupsAsVendorAliases() {
         val topology = CameraTopologyResolver.resolve(
             environment,
             listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, listOf(complete("opaque-a"), complete("opaque-b")))),
             10L,
         )
-        assertEquals(2, topology.canonicalLenses.size)
+        assertEquals(1, topology.canonicalLenses.size)
+        assertEquals(2, topology.canonicalLenses.single().profiles.size)
     }
 
     @Test
@@ -114,7 +115,7 @@ class CameraTopologyResolverTest {
     }
 
     @Test
-    fun enrichmentPreservesTrustedCanonicalIdentityForSameRoute() {
+    fun enrichmentPromotesFallbackCanonicalIdentityButPreservesExactProfile() {
         val minimal = CameraTopologyResolver.resolve(
             environment,
             listOf(
@@ -137,7 +138,9 @@ class CameraTopologyResolverTest {
             10L,
             previousTrustedTopology = minimal,
         )
-        assertEquals(
+        org.junit.Assert.assertTrue(minimal.canonicalLenses.single().fingerprint.value.startsWith("lens:fallback:"))
+        org.junit.Assert.assertTrue(enriched.canonicalLenses.single().fingerprint.value.startsWith("lens:optical:"))
+        org.junit.Assert.assertNotEquals(
             minimal.canonicalLenses.single().fingerprint,
             enriched.canonicalLenses.single().fingerprint,
         )

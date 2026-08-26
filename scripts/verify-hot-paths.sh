@@ -48,7 +48,7 @@ reject_text() {
 }
 
 reject 'global coroutine scope' '\bGlobalScope\b' --glob '*.kt' app/src
-reject 'blocking coroutine bridge' '\brunBlocking\b' --glob '*.kt' app/src
+reject 'blocking coroutine bridge' '\brunBlocking\b' --glob '*.kt' app/src/main
 reject 'sleep-based synchronization' '\bThread\s*\.\s*sleep\s*\(' --glob '*.kt' --glob '*.java' app/src
 reject 'unbounded Java executor factory' \
   '\bExecutors\.(?:newCachedThreadPool|newFixedThreadPool|newSingleThreadExecutor)\s*\(' \

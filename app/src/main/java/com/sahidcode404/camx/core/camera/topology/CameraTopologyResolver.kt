@@ -15,8 +15,11 @@ import com.sahidcode404.camx.core.camera.model.CameraTrust
 import com.sahidcode404.camx.core.camera.model.CanonicalLens
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.model.LensFacing
+import com.sahidcode404.camx.core.camera.model.PreviewStreamType
 import com.sahidcode404.camx.core.camera.model.frozenCopy
 import java.security.MessageDigest
+import kotlin.math.abs
+import kotlin.math.max
 
 /** Pure, bounded, deterministic and deliberately conservative topology resolver. */
 object CameraTopologyResolver {
@@ -27,7 +30,7 @@ object CameraTopologyResolver {
     const val MAX_PROFILES = 128
     const val MAX_CANONICAL_LENSES = 64
     const val MAX_PROFILES_PER_LENS = 32
-    const val MAX_PROVENANCE_SOURCES = 4
+    const val MAX_PROVENANCE_SOURCES = 5
     const val MAX_FOCAL_LENGTHS = 16
     const val MAX_APERTURES = 16
     const val MAX_PREVIEW_STREAMS = 128
@@ -43,8 +46,6 @@ object CameraTopologyResolver {
         require(generatedAtElapsedRealtimeNs >= 0L) { "Topology timestamp cannot be negative" }
         validateInputBounds(environment, snapshots)
 
-        // Freeze, normalize, order, and de-duplicate before identity work. Duplicate insertions therefore
-        // cannot change a topology or its fingerprints.
         val evidence = snapshots
             .asSequence()
             .flatMap { it.evidence.asSequence() }
@@ -68,140 +69,147 @@ object CameraTopologyResolver {
             ?.groupBy { it.transportKey() }
             .orEmpty()
 
+        // Stage A: exact transport profile identity. Provider/source differences do not create sibling
+        // profiles. Direct identity is the open transport; physical identity is logical parent + member.
         val routesWithEvidence = ArrayList<Pair<CameraRoute, List<CameraMetadataEvidence>>>()
         val transportGroups = evidence
             .groupBy { it.transportKey() }
             .entries
             .sortedWith(compareBy({ opaqueKey(it.key.transportId) }, { opaqueKey(it.key.physicalId.orEmpty()) }))
-
         for ((transportKey, values) in transportGroups) {
-            val clusters = compatibilityClusters(values)
-                .sortedWith(compareBy(
-                    { cluster -> cluster.minOf { it.sourcePriority() } },
-                    { cluster -> clusterFingerprint(cluster) },
-                ))
-            for ((clusterIndex, cluster) in clusters.withIndex()) {
-                val normalIdentity = routeIdentity(transportKey)
-                // A conflict on an otherwise identical transport must not silently inherit the old route
-                // identity/trust. The direct path keeps the frozen CAMX-102 route-ID contract while
-                // physical-member identity is length-encoded so opaque separators cannot collide.
-                val routeIdentity = if (clusters.size == 1) {
-                    normalIdentity
-                } else {
-                    "$normalIdentity|conflict|${clusterFingerprint(cluster)}|$clusterIndex"
+            if (!clusterCanFormRoute(values)) continue
+            val preferred = values.minWithOrNull(
+                compareBy<CameraMetadataEvidence>({ it.sourcePriority() }, { it.deterministicKey() }),
+            ) ?: continue
+            val advertised = CameraRoute(
+                id = CameraRouteId("route:${stableHash(routeIdentity(transportKey))}"),
+                source = preferred.source,
+                openCameraId = preferred.transportId,
+                physicalCameraId = preferred.physicalId,
+                capabilities = mergeCapabilities(values.map { it.capabilities }),
+                metadataTrust = CameraTrust.ADVERTISED,
+                sources = values.map { it.source }.toSet(),
+            )
+            require(advertised.sources.size <= MAX_PROVENANCE_SOURCES) {
+                "Route provenance exceeds the CAMX-107 bound"
+            }
+            val previousEvidence = previousEvidenceByTransport[transportKey].orEmpty()
+            val previous = previousRoutesById[advertised.id]
+                ?.takeIf { old ->
+                    old.openCameraId == advertised.openCameraId &&
+                        old.physicalCameraId == advertised.physicalCameraId &&
+                        previousEvidence.isNotEmpty() &&
+                        previousEvidence.all { oldEvidence ->
+                            values.all { current -> !metadataConflicts(current, oldEvidence) }
+                        }
                 }
-                val preferred = cluster.minBy { it.sourcePriority() }
-                val advertised = CameraRoute(
-                    id = CameraRouteId("route:${stableHash(routeIdentity)}"),
-                    source = preferred.source,
-                    openCameraId = preferred.transportId,
-                    physicalCameraId = preferred.physicalId,
-                    capabilities = mergeCapabilities(cluster.map { it.capabilities }),
-                    metadataTrust = CameraTrust.ADVERTISED,
-                    sources = cluster.map { it.source }.toSet(),
-                )
-                require(advertised.sources.size <= MAX_PROVENANCE_SOURCES) {
-                    "Route provenance exceeds the CAMX-107 bound"
-                }
-
-                val previousEvidence = previousEvidenceByTransport[transportKey].orEmpty()
-                val previous = previousRoutesById[advertised.id]
-                    ?.takeIf { old ->
-                        old.openCameraId == advertised.openCameraId &&
-                            old.physicalCameraId == advertised.physicalCameraId &&
-                            previousEvidence.isNotEmpty() &&
-                            previousEvidence.all { oldEvidence ->
-                                cluster.all { current -> !metadataConflicts(current, oldEvidence) }
-                            }
-                    }
-                val route = if (previous == null) advertised else advertised.copy(
-                    metadataTrust = previous.metadataTrust,
-                    previewTrust = previous.previewTrust,
-                    rawTrust = previous.rawTrust,
-                )
-                routesWithEvidence += route to cluster
-                require(routesWithEvidence.size <= MAX_ROUTES) {
-                    "Resolved routes exceed the CAMX-107 bound"
-                }
+            val route = if (previous == null) advertised else advertised.copy(
+                metadataTrust = previous.metadataTrust,
+                previewTrust = previous.previewTrust,
+                rawTrust = previous.rawTrust,
+            )
+            routesWithEvidence += route to values.distinct()
+            require(routesWithEvidence.size <= MAX_ROUTES) {
+                "Resolved routes exceed the CAMX-107 bound"
             }
         }
 
-        val relationshipPhysicalIds = evidence.mapNotNull { it.physicalId?.value }.toSet()
-        val candidateProfiles = routesWithEvidence.map { (route, routeEvidence) ->
-            val opticalKey = strongOpticalKey(routeEvidence)
-            val relationshipAnchor = relationshipAnchor(routeEvidence, relationshipPhysicalIds)
-            val canonicalKey = if (opticalKey != null && relationshipAnchor != null) {
-                "related:${opaqueKey(relationshipAnchor)}|$opticalKey"
-            } else {
-                "separate:${route.id.value}"
-            }
-            CameraProfile(
-                fingerprint = CameraProfileFingerprint("profile:${stableHash(route.id.value)}"),
-                canonicalFingerprint = CanonicalLensFingerprint("lens:${stableHash(canonicalKey)}"),
-                route = route,
+        val candidates = routesWithEvidence.map { (route, routeEvidence) ->
+            ProfileCandidate(
+                profile = CameraProfile(
+                    fingerprint = CameraProfileFingerprint("profile:${stableHash(route.id.value)}"),
+                    canonicalFingerprint = CanonicalLensFingerprint("candidate:${stableHash(route.id.value)}"),
+                    route = route,
+                ),
+                evidence = routeEvidence,
             )
         }
-        require(candidateProfiles.size <= MAX_PROFILES) {
-            "Resolved profiles exceed the CAMX-107 bound"
-        }
+        require(candidates.size <= MAX_PROFILES) { "Resolved profiles exceed the CAMX-107 bound" }
 
-        val previousCanonicalByRoute = compatiblePreviousTopology
-            ?.canonicalLenses
-            ?.flatMap { lens -> lens.profiles.map { profile -> profile.route.id to lens.fingerprint } }
-            ?.toMap()
-            .orEmpty()
-        val candidateGroups = candidateProfiles
-            .groupBy(CameraProfile::canonicalFingerprint)
-            .entries
-            .sortedBy { it.key.value }
-        require(candidateGroups.size <= MAX_CANONICAL_LENSES) {
+        // Stage B: transport-independent optical grouping. Complete-link is intentional: every new
+        // profile must strongly match every existing member, so an A↔B↔C transitive chain cannot
+        // collapse two ambiguous endpoints into one physical lens.
+        val groups = completeLinkGroups(candidates)
+        require(groups.size <= MAX_CANONICAL_LENSES) {
             "Resolved canonical lenses exceed the CAMX-107 bound"
         }
-        candidateGroups.forEach { (_, profiles) ->
-            require(profiles.size <= MAX_PROFILES_PER_LENS) {
+        groups.forEach { group ->
+            require(group.size <= MAX_PROFILES_PER_LENS) {
                 "Profiles per canonical lens exceed the CAMX-107 bound"
             }
         }
 
-        // Previous canonical identity may survive only for one current group and only when all current
-        // route IDs still map unambiguously to that same previous lens. Conflict-split routes cannot match.
-        val preservedCandidateByGroup = candidateGroups.associate { (candidate, groupedProfiles) ->
-            candidate to groupedProfiles.mapNotNull { previousCanonicalByRoute[it.route.id] }.distinct()
-        }
-        val preservationUseCount = preservedCandidateByGroup.values
-            .filter { it.size == 1 }
-            .groupingBy { it.single() }
-            .eachCount()
-        val evidenceByRoute = routesWithEvidence.associate { (route, values) -> route.id to values }
-        val canonicalLenses = candidateGroups.map { (candidateFingerprint, groupedProfiles) ->
-            val previousCandidates = preservedCandidateByGroup.getValue(candidateFingerprint)
-            val fingerprint = previousCandidates.singleOrNull()
-                ?.takeIf { preservationUseCount[it] == 1 }
-                ?: candidateFingerprint
-            val stableProfiles = groupedProfiles.map { profile ->
-                profile.copy(canonicalFingerprint = fingerprint)
-            }
-            val facings = groupedProfiles
-                .flatMap { evidenceByRoute.getValue(it.route.id) }
-                .map(CameraMetadataEvidence::facing)
-                .filterNot { it == LensFacing.UNKNOWN }
-                .distinct()
-            CanonicalLens(
-                fingerprint = fingerprint,
-                facing = facings.singleOrNull() ?: LensFacing.UNKNOWN,
-                profiles = stableProfiles.sortedBy { it.fingerprint.value },
+        val canonicalGroups = groups.map { group ->
+            val metadata = CanonicalLensOptics.merge(group.flatMap { it.evidence })
+            CanonicalGroup(
+                profiles = group,
+                metadata = metadata,
+                stableFingerprint = CanonicalLensOptics.stableFingerprint(metadata),
+                fallbackFingerprint = CanonicalLensOptics.fallbackFingerprint(
+                    environment = environment,
+                    profiles = group.map { it.profile.fingerprint },
+                ),
             )
         }
+        val stableFingerprintCounts = canonicalGroups.mapNotNull { it.stableFingerprint }
+            .groupingBy { it }
+            .eachCount()
+        val canonicalLenses = canonicalGroups.map { group ->
+            // A stable optical key is usable only when it uniquely names one complete-link group.
+            // If sparse evidence makes two independent groups collide, fall back rather than merge.
+            val fingerprint = group.stableFingerprint
+                ?.takeIf { stableFingerprintCounts[it] == 1 }
+                ?: group.fallbackFingerprint
+            val profiles = group.profiles
+                .map { it.profile.copy(canonicalFingerprint = fingerprint) }
+                .sortedBy { it.fingerprint.value }
+            CanonicalLens(
+                fingerprint = fingerprint,
+                facing = group.metadata.facing,
+                profiles = profiles,
+            )
+        }.sortedBy { it.fingerprint.value }
 
         return CameraTopologySnapshot(
             schema = SCHEMA,
             environment = environment,
-            routes = candidateProfiles.map(CameraProfile::route).sortedBy { it.id.value },
+            routes = routesWithEvidence.map { it.first }.sortedBy { it.id.value },
             canonicalLenses = canonicalLenses,
             generatedAtElapsedRealtimeNs = generatedAtElapsedRealtimeNs,
             evidence = evidence,
         ).frozenCopy()
     }
+
+    private fun completeLinkGroups(candidates: List<ProfileCandidate>): List<List<ProfileCandidate>> {
+        val groups = ArrayList<MutableList<ProfileCandidate>>()
+        val ordered = candidates.sortedBy { it.profile.fingerprint.value }
+        for (candidate in ordered) {
+            val eligible = groups.mapIndexedNotNull { index, group ->
+                val comparisons = group.map { member ->
+                    OpticalLensMatcher.compare(member.evidence, candidate.evidence)
+                }
+                if (comparisons.all { it.match == OpticalLensMatch.STRONG_MATCH }) {
+                    GroupFit(index, comparisons.minOfOrNull { it.score } ?: Int.MIN_VALUE, groupKey(group))
+                } else {
+                    null
+                }
+            }
+            val selected = eligible.sortedWith(
+                compareByDescending<GroupFit> { it.weakestScore }
+                    .thenBy { it.groupKey }
+                    .thenBy { it.index },
+            ).firstOrNull()
+            if (selected == null) groups += arrayListOf(candidate) else groups[selected.index] += candidate
+        }
+        return groups
+            .map { it.sortedBy { candidate -> candidate.profile.fingerprint.value } }
+            .sortedBy(::groupKey)
+    }
+
+    private fun groupKey(group: List<ProfileCandidate>): String = group
+        .map { it.profile.fingerprint.value }
+        .sorted()
+        .joinToString("|")
 
     private fun validateInputBounds(
         environment: CameraEnvironmentFingerprint,
@@ -234,7 +242,7 @@ object CameraTopologyResolver {
             "Preview-stream evidence exceeds the CAMX-107 bound"
         }
         require(item.capabilities.fpsRanges.size <= MAX_FPS_RANGES) {
-            "FPS evidence exceeds the CAMX-107 bound"
+            "FPS-range evidence exceeds the CAMX-107 bound"
         }
         require(item.capabilities.rawSizes.size <= MAX_RAW_SIZES) {
             "RAW-size evidence exceeds the CAMX-107 bound"
@@ -258,10 +266,28 @@ object CameraTopologyResolver {
 
     private data class TransportKey(val transportId: String, val physicalId: String?)
 
-    private fun CameraMetadataEvidence.transportKey() = TransportKey(
-        transportId = transportId.value,
-        physicalId = physicalId?.value,
+    private data class ProfileCandidate(
+        val profile: CameraProfile,
+        val evidence: List<CameraMetadataEvidence>,
     )
+
+    private data class CanonicalGroup(
+        val profiles: List<ProfileCandidate>,
+        val metadata: CanonicalLensOpticalMetadata,
+        val stableFingerprint: CanonicalLensFingerprint?,
+        val fallbackFingerprint: CanonicalLensFingerprint,
+    )
+
+    private data class GroupFit(
+        val index: Int,
+        val weakestScore: Int,
+        val groupKey: String,
+    )
+
+    private fun CameraMetadataEvidence.transportKey(): TransportKey {
+        val parent = if (physicalId != null) logicalParentId?.value ?: transportId.value else transportId.value
+        return TransportKey(parent, physicalId?.value)
+    }
 
     private fun routeIdentity(key: TransportKey): String {
         val physical = key.physicalId ?: return "${key.transportId}|"
@@ -270,18 +296,20 @@ object CameraTopologyResolver {
         return "physical:$transportBytes:${key.transportId}:$physicalBytes:$physical"
     }
 
-    private fun compatibilityClusters(
-        values: List<CameraMetadataEvidence>,
-    ): List<List<CameraMetadataEvidence>> {
-        val clusters = ArrayList<MutableList<CameraMetadataEvidence>>()
-        val ordered = values.sortedWith(compareBy({ it.opaqueOrderKey() }, { it.deterministicKey() }))
-        for (item in ordered) {
-            val target = clusters.firstOrNull { cluster ->
-                cluster.all { existing -> !metadataConflicts(existing, item) }
+    private fun clusterCanFormRoute(cluster: List<CameraMetadataEvidence>): Boolean {
+        if (cluster.any {
+                it.source == CameraRouteSource.JAVA_PUBLIC ||
+                    it.source == CameraRouteSource.JAVA_PHYSICAL ||
+                    it.source == CameraRouteSource.NDK_ADVERTISED
             }
-            if (target == null) clusters += arrayListOf(item) else target += item
+        ) return true
+        val certified = cluster.filter { it.source == CameraRouteSource.JAVA_DEEP_PROBED }
+        return certified.any { evidence ->
+            evidence.sensorOrientationDegrees != null &&
+                evidence.focalLengthsMillimetres.isNotEmpty() &&
+                evidence.capabilities.previewStreams.any { it.type == PreviewStreamType.CAMERA2_PRIVATE } &&
+                evidence.capabilities.fpsRanges.isNotEmpty()
         }
-        return clusters.map { cluster -> cluster.distinct() }
     }
 
     private fun CameraMetadataEvidence.deterministicKey(): String = buildString {
@@ -333,14 +361,10 @@ object CameraTopologyResolver {
     private fun CameraMetadataEvidence.sourcePriority(): Int = when (source) {
         CameraRouteSource.JAVA_PHYSICAL -> 0
         CameraRouteSource.JAVA_PUBLIC -> 1
-        CameraRouteSource.NDK_ADVERTISED -> 2
-        CameraRouteSource.NDK_DEEP -> 3
+        CameraRouteSource.JAVA_DEEP_PROBED -> 2
+        CameraRouteSource.NDK_ADVERTISED -> 3
+        CameraRouteSource.NDK_DEEP -> 4
     }
-
-    private fun clusterFingerprint(values: List<CameraMetadataEvidence>): String = stableHash(
-        values.sortedBy { it.deterministicKey() }
-            .joinToString("||") { it.deterministicKey() },
-    )
 
     private fun mergeCapabilities(values: List<CameraCapabilities>): CameraCapabilities {
         val preview = values.flatMap { it.previewStreams }.distinct().sortedWith(
@@ -358,81 +382,42 @@ object CameraTopologyResolver {
         return CameraCapabilities(previewStreams = preview, fpsRanges = fps, rawSizes = raw)
     }
 
-    private fun strongOpticalKey(values: List<CameraMetadataEvidence>): String? {
-        val complete = values.firstOrNull { item ->
-            item.focalLengthsMillimetres.isNotEmpty() &&
-                item.sensorPhysicalWidthMillimetres != null &&
-                item.sensorPhysicalHeightMillimetres != null &&
-                item.activeArray != null &&
-                item.pixelArray != null &&
-                item.sensorOrientationDegrees != null
-        } ?: return null
-        if (values.any { candidate -> metadataConflicts(complete, candidate) }) return null
-        return buildString {
-            append(complete.facing.name)
-            append('|')
-            append(floatListKey(complete.focalLengthsMillimetres).joinToString(","))
-            append('|')
-            append(floatKey(checkNotNull(complete.sensorPhysicalWidthMillimetres)))
-            append('x')
-            append(floatKey(checkNotNull(complete.sensorPhysicalHeightMillimetres)))
-            append('|')
-            append(complete.activeArray)
-            append('|')
-            append(complete.pixelArray)
-            append('|')
-            append(complete.colorFilterArrangement ?: "unknown")
-            append('|')
-            append(complete.sensorOrientationDegrees)
-            append('|')
-            append(floatListKey(complete.apertureValues).joinToString(","))
-        }
-    }
-
-    private fun relationshipAnchor(
-        values: List<CameraMetadataEvidence>,
-        relationshipPhysicalIds: Set<String>,
-    ): String? {
-        val explicitPhysicalIds = values.mapNotNull { it.physicalId?.value }.distinct()
-        if (explicitPhysicalIds.size == 1) return explicitPhysicalIds.single()
-        if (explicitPhysicalIds.size > 1) return null
-        val transportIds = values.map { it.transportId.value }.distinct()
-        return transportIds.singleOrNull()?.takeIf { it in relationshipPhysicalIds }
-    }
-
-    /** Missing fields are compatible; contradictory fields are not. Focal length alone never merges lenses. */
-    private fun metadataConflicts(
-        left: CameraMetadataEvidence,
-        right: CameraMetadataEvidence,
-    ): Boolean {
+    /** Only material contradictions invalidate previously verified route trust. */
+    private fun metadataConflicts(left: CameraMetadataEvidence, right: CameraMetadataEvidence): Boolean {
         if (left.facing != LensFacing.UNKNOWN && right.facing != LensFacing.UNKNOWN && left.facing != right.facing) {
             return true
         }
-        if (left.focalLengthsMillimetres.isNotEmpty() && right.focalLengthsMillimetres.isNotEmpty() &&
-            floatListKey(left.focalLengthsMillimetres) != floatListKey(right.focalLengthsMillimetres)
+        val leftFocal = left.focalLengthsMillimetres.singleOrNull()?.toDouble()
+        val rightFocal = right.focalLengthsMillimetres.singleOrNull()?.toDouble()
+        if (leftFocal != null && rightFocal != null && relativeDelta(leftFocal, rightFocal) > 0.035) return true
+        if (relativeDeltaOrNull(
+                left.sensorPhysicalWidthMillimetres?.toDouble(),
+                right.sensorPhysicalWidthMillimetres?.toDouble(),
+            )?.let { it > 0.06 } == true
         ) return true
-        if (floatsConflict(left.sensorPhysicalWidthMillimetres, right.sensorPhysicalWidthMillimetres)) return true
-        if (floatsConflict(left.sensorPhysicalHeightMillimetres, right.sensorPhysicalHeightMillimetres)) return true
-        if (left.activeArray != null && right.activeArray != null && left.activeArray != right.activeArray) return true
-        if (left.pixelArray != null && right.pixelArray != null && left.pixelArray != right.pixelArray) return true
-        if (left.sensorOrientationDegrees != null && right.sensorOrientationDegrees != null &&
-            left.sensorOrientationDegrees != right.sensorOrientationDegrees
+        if (relativeDeltaOrNull(
+                left.sensorPhysicalHeightMillimetres?.toDouble(),
+                right.sensorPhysicalHeightMillimetres?.toDouble(),
+            )?.let { it > 0.06 } == true
         ) return true
         if (left.colorFilterArrangement != null && right.colorFilterArrangement != null &&
             left.colorFilterArrangement != right.colorFilterArrangement
         ) return true
-        if (left.apertureValues.isNotEmpty() && right.apertureValues.isNotEmpty() &&
-            floatListKey(left.apertureValues) != floatListKey(right.apertureValues)
-        ) return true
         return false
     }
 
-    private fun floatsConflict(left: Float?, right: Float?): Boolean =
-        left != null && right != null && floatKey(left) != floatKey(right)
+    private fun relativeDeltaOrNull(left: Double?, right: Double?): Double? =
+        if (left != null && right != null && left.isFinite() && right.isFinite() && left > 0.0 && right > 0.0) {
+            relativeDelta(left, right)
+        } else {
+            null
+        }
+
+    private fun relativeDelta(left: Double, right: Double): Double =
+        abs(left - right) / max(abs(left), abs(right)).coerceAtLeast(1e-9)
 
     private fun floatListKey(values: List<Float>): List<String> = values.sorted().map(::floatKey)
 
-    /** Exact IEEE-754 representation; deliberately no decimal rounding or locale-sensitive formatting. */
     private fun floatKey(value: Float): String = value.toRawBits().toUInt().toString(16).padStart(8, '0')
 
     private fun opaqueKey(value: String): String = "opaque:${stableHash("opaque-order|$value")}"

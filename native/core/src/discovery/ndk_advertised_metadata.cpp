@@ -125,6 +125,25 @@ bool NormalizeRecord(NdkAdvertisedRecord& record,
   return true;
 }
 
+NdkAdvertisedFailureKind FailureForCandidateStatus(NdkCandidateReadStatus status) noexcept {
+  switch (status) {
+    case NdkCandidateReadStatus::kAccessDenied:
+      return NdkAdvertisedFailureKind::kAccessDenied;
+    case NdkCandidateReadStatus::kServiceError:
+      return NdkAdvertisedFailureKind::kServiceError;
+    case NdkCandidateReadStatus::kCameraUnavailable:
+      return NdkAdvertisedFailureKind::kCameraUnavailable;
+    case NdkCandidateReadStatus::kInvalidOperation:
+      return NdkAdvertisedFailureKind::kInvalidOperation;
+    case NdkCandidateReadStatus::kMalformedMetadata:
+      return NdkAdvertisedFailureKind::kMalformedMetadata;
+    case NdkCandidateReadStatus::kUnavailable:
+    case NdkCandidateReadStatus::kValidMetadata:
+      return NdkAdvertisedFailureKind::kMetadataUnavailable;
+  }
+  return NdkAdvertisedFailureKind::kMetadataUnavailable;
+}
+
 class BoundedWriter final {
  public:
   bool byte(std::uint8_t value) { return append(&value, sizeof(value)); }
@@ -236,6 +255,18 @@ bool EncodeRecord(BoundedWriter& writer, const NdkAdvertisedRecord& record) {
   return true;
 }
 
+void SortReport(NdkAdvertisedReport& report) {
+  std::sort(report.records.begin(), report.records.end(), [](const auto& left, const auto& right) {
+    return OpaqueLess(left.transport_id, right.transport_id);
+  });
+  std::sort(report.failures.begin(), report.failures.end(), [](const auto& left, const auto& right) {
+    if (left.kind != right.kind) {
+      return static_cast<std::uint8_t>(left.kind) < static_cast<std::uint8_t>(right.kind);
+    }
+    return OpaqueLess(left.transport_id, right.transport_id);
+  });
+}
+
 }  // namespace
 
 std::uint64_t StableNdkOpaqueKey(std::string_view value) noexcept {
@@ -308,37 +339,74 @@ NdkAdvertisedReport CollectNdkAdvertisedMetadata(NdkAdvertisedMetadataSource& so
     report.records.push_back(std::move(record));
   }
 
-  std::sort(report.records.begin(), report.records.end(), [](const auto& left, const auto& right) {
-    return OpaqueLess(left.transport_id, right.transport_id);
-  });
-  std::sort(report.failures.begin(), report.failures.end(), [](const auto& left, const auto& right) {
-    if (left.kind != right.kind) {
-      return static_cast<std::uint8_t>(left.kind) < static_cast<std::uint8_t>(right.kind);
+  SortReport(report);
+  return report;
+}
+
+NdkAdvertisedReport CollectNdkCandidateMetadata(
+    NdkAdvertisedMetadataSource& source, const std::vector<std::string>& candidates) {
+  NdkAdvertisedReport report;
+  if (!source.runtime_available()) {
+    report.runtime_available = false;
+    return report;
+  }
+  if (candidates.size() > kNdkMaxDeepCandidates) {
+    report.failures.push_back({NdkAdvertisedFailureKind::kCameraIdLimitExceeded, {}});
+    return report;
+  }
+
+  std::vector<std::string> unique_ids;
+  unique_ids.reserve(candidates.size());
+  for (const auto& id : candidates) {
+    if (!ValidId(id)) {
+      if (report.failures.size() < kNdkMaxFailures) {
+        report.failures.push_back({NdkAdvertisedFailureKind::kInvalidCameraId, {}});
+      }
+      continue;
     }
-    return OpaqueLess(left.transport_id, right.transport_id);
-  });
+    if (std::find(unique_ids.begin(), unique_ids.end(), id) == unique_ids.end()) {
+      unique_ids.push_back(id);
+    }
+  }
+  // Preserve planner/wave order: no sorting before metadata probes.
+  for (const auto& id : unique_ids) {
+    NdkAdvertisedRecord record;
+    const auto status = source.read_candidate(id, record);
+    if (status != NdkCandidateReadStatus::kValidMetadata) {
+      if (report.failures.size() < kNdkMaxFailures) {
+        report.failures.push_back({FailureForCandidateStatus(status), id});
+      }
+      continue;
+    }
+    if (record.transport_id != id) {
+      if (report.failures.size() < kNdkMaxFailures) {
+        report.failures.push_back({NdkAdvertisedFailureKind::kMalformedMetadata, id});
+      }
+      continue;
+    }
+    NdkAdvertisedFailureKind kind = NdkAdvertisedFailureKind::kMalformedMetadata;
+    if (!NormalizeRecord(record, kind)) {
+      if (report.failures.size() < kNdkMaxFailures) report.failures.push_back({kind, id});
+      continue;
+    }
+    report.records.push_back(std::move(record));
+  }
+
+  SortReport(report);
   return report;
 }
 
 std::optional<std::vector<std::uint8_t>> EncodeNdkAdvertisedReport(
     const NdkAdvertisedReport& input) {
   NdkAdvertisedReport report = input;
-  if (report.records.size() > kNdkMaxCameraIds || report.failures.size() > kNdkMaxFailures) {
+  if (report.records.size() > kNdkMaxDeepCandidates || report.failures.size() > kNdkMaxFailures) {
     return std::nullopt;
   }
   for (auto& record : report.records) {
     NdkAdvertisedFailureKind kind = NdkAdvertisedFailureKind::kMalformedMetadata;
     if (!NormalizeRecord(record, kind)) return std::nullopt;
   }
-  std::sort(report.records.begin(), report.records.end(), [](const auto& left, const auto& right) {
-    return OpaqueLess(left.transport_id, right.transport_id);
-  });
-  std::sort(report.failures.begin(), report.failures.end(), [](const auto& left, const auto& right) {
-    if (left.kind != right.kind) {
-      return static_cast<std::uint8_t>(left.kind) < static_cast<std::uint8_t>(right.kind);
-    }
-    return OpaqueLess(left.transport_id, right.transport_id);
-  });
+  SortReport(report);
 
   BoundedWriter writer;
   if (!writer.raw(kMagic) || !writer.u16(kSchema) ||

@@ -9,9 +9,9 @@ import com.sahidcode404.camx.core.camera.model.CameraStreamCapability
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PreviewStreamType
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.coroutines.startCoroutine
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -21,7 +21,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     private val environment = CameraEnvironmentFingerprint("camx-107-test")
 
     @Test
-    fun `startup seed depth performs no advertised reads`() = runSuspend {
+    fun `startup seed depth performs no advertised reads`() = runTest {
         val source = FakeSource(listOf("opaque-a"), mutableMapOf("opaque-a" to record("opaque-a")))
         val report = backend(source).discoverReport(DiscoveryDepth.STARTUP_SEED)
 
@@ -30,7 +30,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `one rear public route retains bounded metadata`() = runSuspend {
+    fun `one rear public route retains bounded enriched metadata`() = runTest {
         val source = FakeSource(
             listOf("rear-token"),
             mutableMapOf("rear-token" to record("rear-token", facing = LensFacing.BACK)),
@@ -49,7 +49,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `front and rear public routes are both preserved without id role semantics`() = runSuspend {
+    fun `front and rear public routes are both preserved without id role semantics`() = runTest {
         val source = FakeSource(
             listOf("0", "9"),
             mutableMapOf(
@@ -66,28 +66,26 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `logical parent emits physical member routes through parent`() = runSuspend {
-        val parent = record("logical-x", physicalIds = listOf("wide-member", "tele-member"))
+    fun `physical relationships publish before child metadata enrichment`() = runTest {
         val source = FakeSource(
             listOf("logical-x"),
             mutableMapOf(
-                "logical-x" to parent,
+                "logical-x" to record("logical-x", physicalIds = listOf("wide-member", "tele-member")),
                 "wide-member" to record("wide-member", focal = 2.0f),
                 "tele-member" to record("tele-member", focal = 8.0f),
             ),
         )
-        val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
-        val physical = report.snapshotFor(CameraRouteSource.JAVA_PHYSICAL)!!.evidence
+        val emissions = ArrayList<JavaAdvertisedEvidenceReport>()
+        backend(source).discoverIncrementally(DiscoveryDepth.ADVERTISED) { emissions += it }
 
-        assertEquals(2, physical.size)
-        assertTrue(physical.all { it.transportId.value == "logical-x" })
-        assertTrue(physical.all { it.logicalParentId?.value == "logical-x" })
-        assertEquals(setOf("wide-member", "tele-member"), physical.mapNotNull { it.physicalId?.value }.toSet())
-        assertTrue(physical.all { it.source == CameraRouteSource.JAVA_PHYSICAL })
+        val firstPhysical = emissions.firstNotNullOf { it.snapshotFor(CameraRouteSource.JAVA_PHYSICAL) }
+        assertEquals(setOf("wide-member", "tele-member"), firstPhysical.evidence.mapNotNull { it.physicalId?.value }.toSet())
+        assertTrue(firstPhysical.evidence.all { it.capabilities.previewStreams.isEmpty() })
+        assertEquals(setOf("wide-member", "tele-member"), source.enrichedReads.filterNot { it == "logical-x" }.toSet())
     }
 
     @Test
-    fun `inaccessible physical member keeps relationship without fabricated capabilities`() = runSuspend {
+    fun `inaccessible physical member keeps relationship without fabricated capabilities`() = runTest {
         val source = FakeSource(
             listOf("logical"),
             mutableMapOf("logical" to record("logical", physicalIds = listOf("hidden-member"))),
@@ -106,7 +104,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `one broken public id does not erase valid public evidence`() = runSuspend {
+    fun `one broken public id does not erase valid public evidence`() = runTest {
         val source = FakeSource(
             listOf("broken", "valid"),
             mutableMapOf("valid" to record("valid")),
@@ -124,7 +122,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `missing optional optics remain valid evidence`() = runSuspend {
+    fun `missing optional optics remain valid evidence`() = runTest {
         val sparse = record("sparse").copy(
             focalLengthsMillimetres = emptyList(),
             sensorPhysicalWidthMillimetres = null,
@@ -142,7 +140,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `reordered ids and duplicate ids produce identical evidence order`() = runSuspend {
+    fun `reordered ids and duplicate ids produce identical evidence order`() = runTest {
         val records = mutableMapOf(
             "alpha" to record("alpha"),
             "beta" to record("beta", focal = 7.0f),
@@ -159,7 +157,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `public id count overflow fails closed before any characteristics read`() = runSuspend {
+    fun `public id count overflow fails closed before any characteristics read`() = runTest {
         val ids = (0..AUX_MAX_PUBLIC_IDS).map { "opaque-$it" }
         val source = FakeSource(ids, mutableMapOf())
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
@@ -173,7 +171,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `physical id count overflow preserves logical route and skips member reads`() = runSuspend {
+    fun `physical id count overflow preserves logical route and skips member reads`() = runTest {
         val ids = (0..AUX_MAX_PHYSICAL_IDS_PER_LOGICAL).map { "member-$it" }
         val source = FakeSource(
             listOf("logical"),
@@ -182,7 +180,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
 
         assertEquals(1, report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.size)
-        assertEquals(listOf("logical"), source.reads)
+        assertTrue(source.reads.all { it == "logical" })
         assertTrue(report.snapshotFor(CameraRouteSource.JAVA_PHYSICAL) == null)
         assertTrue(report.failures.any {
             it.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED
@@ -190,7 +188,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `metadata list overflow rejects only offending route`() = runSuspend {
+    fun `metadata list overflow rejects only offending route`() = runTest {
         val tooManyFocals = (1..AUX_MAX_FOCAL_LENGTHS + 1).map(Int::toFloat)
         val source = FakeSource(
             listOf("oversized", "valid"),
@@ -211,7 +209,40 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `published evidence and failures reject mutation`() = runSuspend {
+    fun `java metadata work reaches exactly configured three lanes without blocking`() = runTest {
+        var active = 0
+        var maximum = 0
+        val threeEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val records = (0 until 6).associate { index -> "id-$index" to record("id-$index") }.toMutableMap()
+        val source = object : JavaAdvertisedCameraMetadataSource {
+            override fun advertisedIds(): List<String> = records.keys.toList()
+
+            override suspend fun read(id: String): JavaAdvertisedCameraRecord? = records[id]
+
+            override suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
+                active += 1
+                maximum = maxOf(maximum, active)
+                if (maximum == DEFAULT_JAVA_METADATA_LANES) threeEntered.complete(Unit)
+                release.await()
+                active -= 1
+                return records[id]?.minimalCopy()
+            }
+        }
+
+        val discovery = launch { backend(source).discoverReport(DiscoveryDepth.ADVERTISED) }
+        threeEntered.await()
+
+        assertEquals(DEFAULT_JAVA_METADATA_LANES, active)
+        assertEquals(DEFAULT_JAVA_METADATA_LANES, maximum)
+
+        release.complete(Unit)
+        discovery.join()
+        assertEquals(0, active)
+    }
+
+    @Test
+    fun `published evidence and failures reject mutation`() = runTest {
         val source = FakeSource(listOf("rear"), mutableMapOf("rear" to record("rear")))
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
         val evidence = report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence
@@ -224,7 +255,6 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
             @Suppress("UNCHECKED_CAST")
             (report.failures as MutableList<JavaAdvertisedEvidenceFailure>).clear()
         }
-        Unit
     }
 
     private fun backend(source: JavaAdvertisedCameraMetadataSource) =
@@ -232,6 +262,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
             environment = environment,
             clockNanos = { 123L },
             source = source,
+            metadataBudget = DiscoveryMetadataBudget(),
         )
 
     private fun record(
@@ -264,31 +295,25 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         physicalIds = physicalIds,
     )
 
-    private fun <T> runSuspend(block: suspend () -> T): T {
-        var outcome: Result<T>? = null
-        block.startCoroutine(
-            object : Continuation<T> {
-                override val context = EmptyCoroutineContext
-
-                override fun resumeWith(result: Result<T>) {
-                    outcome = result
-                }
-            },
-        )
-        return checkNotNull(outcome) { "Test coroutine did not complete synchronously" }.getOrThrow()
-    }
-
     private class FakeSource(
         private val ids: List<String>,
         private val records: MutableMap<String, JavaAdvertisedCameraRecord>,
         private val failReads: Set<String> = emptySet(),
     ) : JavaAdvertisedCameraMetadataSource {
         val reads = ArrayList<String>()
+        val enrichedReads = ArrayList<String>()
 
         override fun advertisedIds(): List<String> = ids
 
-        override fun read(id: String): JavaAdvertisedCameraRecord? {
+        override suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
             reads += id
+            if (id in failReads) throw IllegalStateException("inaccessible")
+            return records[id]?.minimalCopy()
+        }
+
+        override suspend fun read(id: String): JavaAdvertisedCameraRecord? {
+            reads += id
+            enrichedReads += id
             if (id in failReads) throw IllegalStateException("inaccessible")
             return records[id]
         }

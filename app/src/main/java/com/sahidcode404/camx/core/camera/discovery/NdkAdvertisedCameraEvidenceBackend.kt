@@ -46,6 +46,10 @@ enum class NdkAdvertisedEvidenceFailureKind {
     METADATA_UNAVAILABLE,
     MALFORMED_METADATA,
     METADATA_BOUND_EXCEEDED,
+    ACCESS_DENIED,
+    SERVICE_ERROR,
+    CAMERA_UNAVAILABLE,
+    INVALID_OPERATION,
     MALFORMED_NATIVE_PAYLOAD,
 }
 
@@ -61,9 +65,8 @@ data class NdkAdvertisedEvidenceReport(
 )
 
 /**
- * API-24+ Camera-NDK advertised metadata only. The native implementation lives
- * in the API-23-loadable core and resolves public Camera-NDK symbols with
- * dlopen/dlsym, so this bridge never makes libcamera2ndk.so a strong dependency.
+ * API-24+ Camera-NDK advertised metadata only. The native implementation lives in the API-23
+ * loadable core and resolves public Camera-NDK symbols with dlopen/dlsym.
  */
 internal object NdkAdvertisedNativeBridge {
     fun collect(deviceApi: Int): ByteArray? {
@@ -96,7 +99,7 @@ internal class NdkAdvertisedCameraEvidenceBackend(
         val payload = rawCollector(api)
             ?: return report(NdkAdvertisedRuntimeState.UNAVAILABLE, emptyList(), emptyList())
         coroutineContext.ensureActive()
-        val decoded = NdkAdvertisedSnapshotCodec.decode(payload)
+        val decoded = NdkAdvertisedSnapshotCodec.decode(payload, CameraRouteSource.NDK_ADVERTISED)
             ?: return report(
                 NdkAdvertisedRuntimeState.INVALID_PAYLOAD,
                 emptyList(),
@@ -135,12 +138,16 @@ internal data class DecodedNdkAdvertisedSnapshot(
     val failures: List<NdkAdvertisedEvidenceFailure>,
 )
 
-/** Strict bounded decoder for the compact native snapshot protocol. */
+/** Strict bounded decoder shared by advertised and explicit deep metadata-only probes. */
 internal object NdkAdvertisedSnapshotCodec {
     private val magic = byteArrayOf('C'.code.toByte(), 'X'.code.toByte(), 'N'.code.toByte(), '1'.code.toByte())
     private const val schema = 1
 
-    fun decode(bytes: ByteArray?): DecodedNdkAdvertisedSnapshot? {
+    fun decode(
+        bytes: ByteArray?,
+        source: CameraRouteSource = CameraRouteSource.NDK_ADVERTISED,
+    ): DecodedNdkAdvertisedSnapshot? {
+        if (source != CameraRouteSource.NDK_ADVERTISED && source != CameraRouteSource.NDK_DEEP) return null
         if (bytes == null || bytes.size !in 12..NDK_AUX_MAX_ENCODED_BYTES) return null
         val reader = Reader(bytes)
         if (!reader.raw(4)?.contentEquals(magic).orFalse()) return null
@@ -149,7 +156,9 @@ internal object NdkAdvertisedSnapshotCodec {
         if (status !in 0..1 || reader.u8() != 0) return null
         val recordCount = reader.u16() ?: return null
         val failureCount = reader.u16() ?: return null
-        if (recordCount > NDK_AUX_MAX_CAMERA_IDS || failureCount > NDK_AUX_MAX_FAILURES) return null
+        val maxRecords = if (source == CameraRouteSource.NDK_DEEP) DEEP_AUX_HARD_MAXIMUM_CANDIDATES
+        else NDK_AUX_MAX_CAMERA_IDS
+        if (recordCount > maxRecords || failureCount > NDK_AUX_MAX_FAILURES) return null
         if (status == 1 && (recordCount != 0 || failureCount != 0)) return null
 
         val evidence = ArrayList<CameraMetadataEvidence>(recordCount)
@@ -201,7 +210,7 @@ internal object NdkAdvertisedSnapshotCodec {
             val raw = List(rawCount) { reader.positiveSize() ?: return null }
 
             evidence += CameraMetadataEvidence(
-                source = CameraRouteSource.NDK_ADVERTISED,
+                source = source,
                 transportId = CameraTransportId(id),
                 facing = when (facingCode) {
                     1 -> LensFacing.FRONT
@@ -238,6 +247,10 @@ internal object NdkAdvertisedSnapshotCodec {
                 4 -> NdkAdvertisedEvidenceFailureKind.METADATA_UNAVAILABLE
                 5 -> NdkAdvertisedEvidenceFailureKind.MALFORMED_METADATA
                 6 -> NdkAdvertisedEvidenceFailureKind.METADATA_BOUND_EXCEEDED
+                7 -> NdkAdvertisedEvidenceFailureKind.ACCESS_DENIED
+                8 -> NdkAdvertisedEvidenceFailureKind.SERVICE_ERROR
+                9 -> NdkAdvertisedEvidenceFailureKind.CAMERA_UNAVAILABLE
+                10 -> NdkAdvertisedEvidenceFailureKind.INVALID_OPERATION
                 else -> return null
             }
             failures += NdkAdvertisedEvidenceFailure(kind, id.ifEmpty { null })

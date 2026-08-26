@@ -159,7 +159,11 @@ object CameraStateTransitions {
             CameraEnginePhase.STRUCTURAL_ERROR,
             CameraEnginePhase.CLOSED,
         ),
-        CameraEnginePhase.PAUSING to setOf(CameraEnginePhase.WAITING_FOR_SURFACE, CameraEnginePhase.CLOSED),
+        CameraEnginePhase.PAUSING to setOf(
+            CameraEnginePhase.PAUSING,
+            CameraEnginePhase.WAITING_FOR_SURFACE,
+            CameraEnginePhase.CLOSED,
+        ),
         CameraEnginePhase.RECOVERABLE_ERROR to setOf(
             CameraEnginePhase.WAITING_FOR_SURFACE,
             CameraEnginePhase.OPENING,

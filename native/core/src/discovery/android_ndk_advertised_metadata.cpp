@@ -55,8 +55,7 @@ class DynamicLibrary final {
 };
 
 struct CameraNdkFunctions final {
-  // Deliberately spell the ABI signatures rather than using decltype on the
-  // API-24 declarations. This translation unit is compiled at android-23 and
+  // ABI signatures are spelled explicitly: this translation unit is compiled at android-23 and
   // must never take the address of an unavailable Camera-NDK symbol.
   using CreateManager = ACameraManager* (*)();
   using DeleteManager = void (*)(ACameraManager*);
@@ -111,6 +110,25 @@ CameraNdkFunctions LoadFunctions(const DynamicLibrary& library) noexcept {
 
 enum class EntryResult { kMissing, kPresent, kError };
 
+NdkCandidateReadStatus CandidateStatus(camera_status_t status) noexcept {
+  switch (status) {
+    case ACAMERA_ERROR_PERMISSION_DENIED:
+      return NdkCandidateReadStatus::kAccessDenied;
+    case ACAMERA_ERROR_CAMERA_DEVICE:
+    case ACAMERA_ERROR_CAMERA_SERVICE:
+      return NdkCandidateReadStatus::kServiceError;
+    case ACAMERA_ERROR_CAMERA_DISCONNECTED:
+    case ACAMERA_ERROR_CAMERA_IN_USE:
+    case ACAMERA_ERROR_MAX_CAMERA_IN_USE:
+    case ACAMERA_ERROR_CAMERA_DISABLED:
+      return NdkCandidateReadStatus::kCameraUnavailable;
+    case ACAMERA_ERROR_INVALID_OPERATION:
+      return NdkCandidateReadStatus::kInvalidOperation;
+    default:
+      return NdkCandidateReadStatus::kUnavailable;
+  }
+}
+
 class AndroidCameraNdkSource final : public NdkAdvertisedMetadataSource {
  public:
   AndroidCameraNdkSource(std::int32_t android_api, const CameraNdkFunctions& functions) noexcept
@@ -151,17 +169,34 @@ class AndroidCameraNdkSource final : public NdkAdvertisedMetadataSource {
   }
 
   bool read(std::string_view transport_id, NdkAdvertisedRecord& output) noexcept override {
-    if (!runtime_available() || transport_id.empty() || transport_id.size() > kNdkMaxIdBytes) {
-      return false;
+    return read_candidate(transport_id, output) == NdkCandidateReadStatus::kValidMetadata;
+  }
+
+  NdkCandidateReadStatus read_candidate(
+      std::string_view transport_id, NdkAdvertisedRecord& output) noexcept override {
+    if (!runtime_available() || transport_id.empty() || transport_id.size() > kNdkMaxIdBytes ||
+        transport_id.find('\0') != std::string_view::npos) {
+      return NdkCandidateReadStatus::kInvalidOperation;
     }
     const std::string id(transport_id);
     ACameraMetadata* raw_metadata = nullptr;
-    if (functions_.get_camera_characteristics(manager_.get(), id.c_str(), &raw_metadata) !=
-            ACAMERA_OK ||
-        raw_metadata == nullptr) {
-      return false;
+    const auto status = functions_.get_camera_characteristics(manager_.get(), id.c_str(), &raw_metadata);
+    if (status != ACAMERA_OK || raw_metadata == nullptr) {
+      if (raw_metadata != nullptr) functions_.free_metadata(raw_metadata);
+      return CandidateStatus(status);
     }
     RuntimeNdkOwner<ACameraMetadata> metadata(raw_metadata, functions_.free_metadata);
+    if (!decode_metadata(id, raw_metadata, output)) {
+      return NdkCandidateReadStatus::kMalformedMetadata;
+    }
+    return NdkCandidateReadStatus::kValidMetadata;
+  }
+
+ private:
+  bool decode_metadata(
+      const std::string& id,
+      const ACameraMetadata* raw_metadata,
+      NdkAdvertisedRecord& output) const noexcept {
     if (!validate_tag_bound(raw_metadata)) return false;
 
     NdkAdvertisedRecord record;
@@ -190,7 +225,6 @@ class AndroidCameraNdkSource final : public NdkAdvertisedMetadataSource {
     return true;
   }
 
- private:
   EntryResult entry(const ACameraMetadata* metadata, std::uint32_t tag,
                     ACameraMetadata_const_entry& output) const noexcept {
     const auto status = functions_.get_const_entry(metadata, tag, &output);
@@ -408,31 +442,39 @@ class AndroidCameraNdkSource final : public NdkAdvertisedMetadataSource {
   RuntimeNdkOwner<ACameraManager> manager_;
 };
 
+std::optional<std::vector<std::uint8_t>> UnavailablePayload() {
+  NdkAdvertisedReport unavailable;
+  unavailable.runtime_available = false;
+  return EncodeNdkAdvertisedReport(unavailable);
+}
+
 }  // namespace
 
 std::optional<std::vector<std::uint8_t>> CollectAndroidNdkAdvertisedMetadata(
     std::int32_t android_api) {
-  if (android_api < kCameraNdkMinimumApi) {
-    NdkAdvertisedReport unavailable;
-    unavailable.runtime_available = false;
-    return EncodeNdkAdvertisedReport(unavailable);
-  }
+  if (android_api < kCameraNdkMinimumApi) return UnavailablePayload();
 
   DynamicLibrary library("libcamera2ndk.so");
-  if (!library.available()) {
-    NdkAdvertisedReport unavailable;
-    unavailable.runtime_available = false;
-    return EncodeNdkAdvertisedReport(unavailable);
-  }
+  if (!library.available()) return UnavailablePayload();
   const auto functions = LoadFunctions(library);
-  if (!functions.complete()) {
-    NdkAdvertisedReport unavailable;
-    unavailable.runtime_available = false;
-    return EncodeNdkAdvertisedReport(unavailable);
-  }
+  if (!functions.complete()) return UnavailablePayload();
 
   AndroidCameraNdkSource source(android_api, functions);
   return EncodeNdkAdvertisedReport(CollectNdkAdvertisedMetadata(source));
+}
+
+std::optional<std::vector<std::uint8_t>> CollectAndroidNdkCandidateMetadata(
+    std::int32_t android_api, const std::vector<std::string>& candidates) {
+  if (candidates.size() > kNdkMaxDeepCandidates) return std::nullopt;
+  if (android_api < kCameraNdkMinimumApi) return UnavailablePayload();
+
+  DynamicLibrary library("libcamera2ndk.so");
+  if (!library.available()) return UnavailablePayload();
+  const auto functions = LoadFunctions(library);
+  if (!functions.complete()) return UnavailablePayload();
+
+  AndroidCameraNdkSource source(android_api, functions);
+  return EncodeNdkAdvertisedReport(CollectNdkCandidateMetadata(source, candidates));
 }
 
 }  // namespace camx
