@@ -14,8 +14,8 @@ The semantic architecture is accepted independently of these technologies. A can
 | exact `ComputationalDngWriter` implementation | PROVISIONAL / NARROW DIRECT FLOAT-CFA REFERENCE IMPLEMENTED / EXTERNAL DECODER EVIDENCE PENDING | M8B named-decoder matrix, real exact-profile calibration/source evidence, security review, and comparison against pinned/pruned SDK or standards-neutral master where useful |
 | computational DNG interoperability | NEEDS PHYSICAL PROOF | Real source/calibration and named decoder matrix |
 | OpenEXR/internal computational master fallback | PROVISIONAL | M8B truthful master-format decision, especially for future `LinearSceneRgb` products |
-| SIMD providers | NEEDS PROTOTYPE + PHYSICAL PROOF | M9 differential correctness and measured device benefit |
-| Vulkan providers | NEEDS PROTOTYPE + PHYSICAL PROOF | M9 feature/driver/API/correctness/performance/energy proof |
+| SIMD providers | PROVISIONAL / REAL NATIVE DENSE-FUSION CANDIDATE IMPLEMENTED / PHYSICAL PARETO EVIDENCE PENDING | M9 full-product differential correctness plus measured exact-device p50/p95/p99, memory, energy and thermal benefit before production routing |
+| Vulkan providers | NEEDS PROTOTYPE + PHYSICAL PROOF / NOT IMPLEMENTED | M9 feature/driver/API/correctness/performance/energy proof after a useful CPU baseline |
 | direct AHardwareBuffer ingest | NEEDS PROTOTYPE + PHYSICAL PROOF | API-26+ format/import/copy/energy evidence; never API-23 assumption |
 | segment/tile/checkpoint dimensions | PROVISIONAL | container/codec/resource measurements |
 | float precision profiles | PROVISIONAL / M8B FLOAT32 CFA REFERENCE USES THIS PROFILE | numerical error, uncertainty, storage, and named-decoder interoperability proof |

@@ -132,6 +132,9 @@ jobs:
       - name: Verify M8B computational DNG/interchange
         run: bash ./scripts/verify-m8b-interchange.sh
 
+      - name: Verify M9 SIMD candidate and Vulkan gate
+        run: bash ./scripts/verify-m9-optimization.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
