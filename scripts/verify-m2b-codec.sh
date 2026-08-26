@@ -62,8 +62,8 @@ for test_requirement in \
   fi
 done
 
-rg --fixed-strings --quiet 'PROVISIONAL reference candidate' "$adr"
-rg --fixed-strings --quiet 'PACKED_NONE remains frozen and mandatory' "$adr"
+rg --fixed-strings --quiet 'Status: Provisional' "$adr"
+rg --fixed-strings --quiet '`PACKED_NONE` remains frozen and mandatory.' "$adr"
 rg --fixed-strings --quiet 'physical acceptance and shipping selection pending' "$implementation_doc"
 rg --fixed-strings --quiet 'physical Pareto benchmark pending' "$benchmark_doc"
 
