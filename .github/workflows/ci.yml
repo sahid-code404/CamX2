@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     concurrency:
-      group: camx-validation-${{ github.ref }}
+      group: camx-validation-${{ github.ref }}-${{ github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -101,6 +101,45 @@ jobs:
 
       - name: Verify architecture document and type inventory
         run: ./scripts/verify-architecture.sh
+
+      - name: Verify computational RAW Revision 2 freeze
+        run: ./scripts/verify-computational-raw-architecture.sh
+
+      - name: Verify M1 immutable acquisition and source corpus
+        run: ./scripts/verify-m1-acquisition.sh
+
+      - name: Verify M2A provisional RAW-video container
+        run: ./scripts/verify-m2a-container.sh
+
+      - name: Verify M2B provisional RAW-video codec
+        run: ./scripts/verify-m2b-codec.sh
+
+      - name: Verify M3 deterministic typed DAG/compiler
+        run: ./scripts/verify-m3-graph.sh
+
+      - name: Verify M4 bounded RAW burst acquisition
+        run: bash ./scripts/verify-m4-burst.sh
+
+      - name: Verify M5 calibration and noise reference
+        run: bash ./scripts/verify-m5-calibration.sh
+
+      - name: Verify M6 alignment visibility and uncertainty
+        run: bash ./scripts/verify-m6-alignment.sh
+
+      - name: Verify M7 computational photo reconstruction
+        run: bash ./scripts/verify-m7-reconstruction.sh
+
+      - name: Verify M8B computational DNG/interchange
+        run: bash ./scripts/verify-m8b-interchange.sh
+
+      - name: Verify M9 SIMD candidate and Vulkan gate
+        run: bash ./scripts/verify-m9-optimization.sh
+
+      - name: Verify M10 continuous sensor RAW video
+        run: bash ./scripts/verify-m10-raw-video.sh
+
+      - name: Verify real photo and RAW-video camera controls
+        run: bash ./scripts/verify-camera-capture-ui.sh
 
       - name: Run host native tests
         run: ./scripts/test-native.sh

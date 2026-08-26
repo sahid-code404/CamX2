@@ -134,6 +134,10 @@ data object RawSessionRejected : CameraFailure {
     override val policy = structuralRawFailure()
 }
 
+data class RawCaptureRejected(val reason: String) : CameraFailure {
+    override val policy = policy(category = CameraFailureCategory.RAW, retry = true)
+}
+
 data object RawCaptureTimeout : CameraFailure {
     override val policy = policy(category = CameraFailureCategory.RAW, retry = true)
 }
