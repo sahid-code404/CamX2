@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.LinkedHashMap
-import java.util.PriorityQueue
 
 class GraphExecutionStep internal constructor(
     val nodeId: GraphNodeId,
@@ -149,8 +148,7 @@ object GraphCompiler {
                     "Source graph value ${value.id.value} cannot have a producer",
                 )
             }
-            val consumers = consumersByValue.getValue(value.id)
-            if (consumers.isEmpty() && value.id !in finalOutputs) {
+            if (consumersByValue.getValue(value.id).isEmpty() && value.id !in finalOutputs) {
                 compilationFailure(
                     GraphCompileFailureReason.DANGLING_VALUE,
                     "Graph value ${value.id.value} is neither consumed nor a final output",
@@ -162,9 +160,12 @@ object GraphCompiler {
         val contractsByNode = LinkedHashMap<GraphNodeId, ReferenceNodeContract>()
         orderedNodes.forEach { node ->
             val contract = ReferenceNodeCatalog.resolve(node.algorithmId, node.algorithmVersion)
-            val inputs = node.inputs.map(valuesById::getValue)
-            val outputs = node.outputs.map(valuesById::getValue)
-            ReferenceNodeCatalog.validate(contract, node, inputs, outputs)
+            ReferenceNodeCatalog.validate(
+                contract,
+                node,
+                node.inputs.map(valuesById::getValue),
+                node.outputs.map(valuesById::getValue),
+            )
             contractsByNode[node.id] = contract
         }
 
@@ -213,30 +214,27 @@ object GraphCompiler {
             )
         }
 
-        val determinismPlan = DeterminismPlan(
-            graphSha256 = graphHash,
-            planSha256 = planHash,
-            randomnessPolicy = M3ReferenceAlgorithms.NO_RANDOMNESS_POLICY,
-            algorithms = algorithmManifest,
-        )
-        val manifestPlan = M3ProcessingManifestPlan(
-            sourceBindings = valuesById.values.mapNotNull(GraphValue::sourceBinding),
-            finalOutputs = finalOutputs,
-            graphSha256 = graphHash,
-            planSha256 = planHash,
-            changesSamples = mutationSummary.changesSamples,
-            changesGeometry = mutationSummary.changesGeometry,
-            changesRepresentation = mutationSummary.changesRepresentation,
-            changesProvenance = mutationSummary.changesProvenance,
-        )
-
         return CompiledGraphPlan(
             values = valuesById.values.toList(),
             steps = resourceCompilation.steps,
             finalOutputs = finalOutputs,
             resourceProof = resourceCompilation.proof,
-            determinismPlan = determinismPlan,
-            manifestPlan = manifestPlan,
+            determinismPlan = DeterminismPlan(
+                graphSha256 = graphHash,
+                planSha256 = planHash,
+                randomnessPolicy = M3ReferenceAlgorithms.NO_RANDOMNESS_POLICY,
+                algorithms = algorithmManifest,
+            ),
+            manifestPlan = M3ProcessingManifestPlan(
+                sourceBindings = valuesById.values.mapNotNull(GraphValue::sourceBinding),
+                finalOutputs = finalOutputs,
+                graphSha256 = graphHash,
+                planSha256 = planHash,
+                changesSamples = mutationSummary.changesSamples,
+                changesGeometry = mutationSummary.changesGeometry,
+                changesRepresentation = mutationSummary.changesRepresentation,
+                changesProvenance = mutationSummary.changesProvenance,
+            ),
         )
     }
 
@@ -376,17 +374,17 @@ object GraphCompiler {
         }
 
         val indegree = dependencies.mapValuesTo(LinkedHashMap()) { it.value.size }
-        val ready = PriorityQueue<GraphNodeId>(compareBy(GraphNodeId::value))
-        indegree.filterValues { it == 0 }.keys.forEach(ready::add)
+        val ready = ArrayList<GraphNodeId>()
+        indegree.filterValues { it == 0 }.keys.sortedBy { it.value }.forEach(ready::add)
         val ordered = ArrayList<GraphNodeInvocation>(nodesById.size)
         while (ready.isNotEmpty()) {
-            val nodeId = ready.remove()
+            val nodeId = ready.removeAt(0)
             ordered.add(nodesById.getValue(nodeId))
             dependents.getValue(nodeId).sortedBy { it.value }.forEach { dependent ->
                 val next = indegree.getValue(dependent) - 1
                 indegree[dependent] = next
                 if (next == 0) {
-                    ready.add(dependent)
+                    insertReadyByNodeId(ready, dependent)
                 }
             }
         }
@@ -394,6 +392,15 @@ object GraphCompiler {
             compilationFailure(GraphCompileFailureReason.CYCLE, "Graph contains a dependency cycle")
         }
         return ordered
+    }
+
+    private fun insertReadyByNodeId(ready: MutableList<GraphNodeId>, nodeId: GraphNodeId) {
+        val insertionIndex = ready.indexOfFirst { it.value > nodeId.value }
+        if (insertionIndex < 0) {
+            ready.add(nodeId)
+        } else {
+            ready.add(insertionIndex, nodeId)
+        }
     }
 
     private fun compileResourcePlan(
@@ -462,29 +469,28 @@ object GraphCompiler {
                     throw IllegalStateException("Compiler liveness bug: negative use count")
                 }
                 remainingUses[inputId] = nextUses
-                if (nextUses == 0 && inputId !in finalOutputs) {
-                    if (liveValues.remove(inputId)) {
-                        liveBytes = checkedSubtract(
-                            liveBytes,
-                            valuesById.getValue(inputId).canonicalBytes,
-                            "Live-byte total underflow",
-                        )
-                        releases.add(inputId)
-                    }
+                if (nextUses == 0 && inputId !in finalOutputs && liveValues.remove(inputId)) {
+                    liveBytes = checkedSubtract(
+                        liveBytes,
+                        valuesById.getValue(inputId).canonicalBytes,
+                        "Live-byte total underflow",
+                    )
+                    releases.add(inputId)
                 }
             }
 
-            val step = GraphExecutionStep(
-                nodeId = node.id,
-                algorithmId = contract.algorithmId,
-                algorithmVersion = contract.algorithmVersion,
-                backend = GraphBackend.SCALAR_REFERENCE,
-                inputs = node.inputs,
-                outputs = node.outputs,
-                workspaceBytes = workspace,
-                releaseAfter = releases,
+            steps.add(
+                GraphExecutionStep(
+                    nodeId = node.id,
+                    algorithmId = contract.algorithmId,
+                    algorithmVersion = contract.algorithmVersion,
+                    backend = GraphBackend.SCALAR_REFERENCE,
+                    inputs = node.inputs,
+                    outputs = node.outputs,
+                    workspaceBytes = workspace,
+                    releaseAfter = releases,
+                ),
             )
-            steps.add(step)
             proofSteps.add(
                 ResourceStepProof(
                     nodeId = node.id,
@@ -511,16 +517,18 @@ object GraphCompiler {
                 "Graph requires $reserved resident bytes but budget is ${budget.maxResidentBytes}",
             )
         }
-        val proof = ResourceProof(
-            sourceBytes = sourceBytes,
-            finalOutputBytes = finalOutputBytes,
-            peakLiveAndOutputBytes = peak,
-            peakWorkspaceBytes = peakWorkspace,
-            safetyMarginBytes = budget.safetyMarginBytes,
-            reservedBytes = reserved,
-            steps = proofSteps,
+        return ResourceCompilation(
+            steps = immutableList(steps),
+            proof = ResourceProof(
+                sourceBytes = sourceBytes,
+                finalOutputBytes = finalOutputBytes,
+                peakLiveAndOutputBytes = peak,
+                peakWorkspaceBytes = peakWorkspace,
+                safetyMarginBytes = budget.safetyMarginBytes,
+                reservedBytes = reserved,
+                steps = proofSteps,
+            ),
         )
-        return ResourceCompilation(steps = immutableList(steps), proof = proof)
     }
 }
 
