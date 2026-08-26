@@ -53,3 +53,5 @@ Pause, surface invalidation, lens selection changes, shutdown, Camera2 terminal 
 Sensor RAW video is not physically certified by CI. CI can prove source contracts, bounded models, deterministic container/codec behavior, compilation, API-23 compatibility, unit tests, architecture guards, and APK packaging, but it cannot prove sustained write margin, real sensor frame cadence, thermal behavior, device-specific stream combinations, long-duration stability, or power-loss recovery on a particular handset.
 
 Physical M10 acceptance therefore still requires exact-device testing of start/stop, frame/gap accounting, file recovery, sustained duration, storage pressure, pause/lens-switch interruption, thermal behavior, and replay/decoder verification of captured sensor samples.
+
+Validation note: `phase/camx2-m10-image-lease-ci` is a temporary ref used only to force CI for the exact lease-fix code head while GitHub push events on the working branch are delayed.
