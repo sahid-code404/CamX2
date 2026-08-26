@@ -7,7 +7,7 @@ The semantic architecture is accepted independently of these technologies. A can
 | Decision | Current state | Gate before acceptance |
 | --- | --- | --- |
 | MCAP-based CXRB | PROVISIONAL / REFERENCE PROTOTYPE IMPLEMENTED / PHYSICAL EVIDENCE PENDING | M2A mobile durability, bounded-memory, throughput, corruption-radius, recovery, large-file, and MCAP-comparison evidence |
-| compressed RAW-video codec/default | PROVISIONAL / NEEDS PROTOTYPE | M2B bit-exact corpus + API-23/ABI + energy/thermal/storage Pareto evidence |
+| compressed RAW-video codec/default | PROVISIONAL / RICE_DELTA_BYTE REFERENCE PROTOTYPE IMPLEMENTED / PHYSICAL PARETO EVIDENCE PENDING | M2B bit-exact corpus + API-23/ABI + online throughput + energy/thermal/storage Pareto evidence; compare every serious candidate against `PACKED_NONE` |
 | `PACKED_NONE` | FROZEN baseline | Mandatory reversible admission path; not optional |
 | DngCreator for matched sensor-domain cases | NEEDS PHYSICAL PROOF | M8A per-profile metadata/raster/decoder validation |
 | packed RAW through DNG tooling | PROVISIONAL / NEEDS PROTOTYPE | Independent unpack/CFA/metadata cohort |
