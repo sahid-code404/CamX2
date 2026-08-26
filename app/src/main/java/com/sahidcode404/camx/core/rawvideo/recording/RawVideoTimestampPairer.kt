@@ -3,21 +3,31 @@ package com.sahidcode404.camx.core.rawvideo.recording
 import android.media.Image
 import java.util.LinkedHashMap
 
+/**
+ * One exact timestamp pair.
+ *
+ * I describes the source lease type accepted by RawVideoTimestampPairer. Production M10 accepts
+ * Camera2 Image leases, but those leases are converted to DetachedRawSensorImage before they can
+ * become pending timestamp state. The pair therefore owns AutoCloseable detached evidence rather
+ * than promising that a framework Image remains alive after offerImage returns.
+ */
 class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
     val timestampNs: Long,
     val frameNumber: Long,
-    private var image: I?,
+    private var ownedEvidence: AutoCloseable?,
     val result: R,
 ) : AutoCloseable {
-    fun takeImage(): I {
-        val value = checkNotNull(image) { "M10 paired image ownership already moved" }
-        image = null
-        return value
+    internal fun takeDetachedRawSensorImage(): DetachedRawSensorImage {
+        val value = checkNotNull(ownedEvidence) { "M10 paired RAW evidence ownership already moved" }
+        ownedEvidence = null
+        if (value is DetachedRawSensorImage) return value
+        runCatching { value.close() }
+        error("M10 production RAW-video pair did not contain detached RAW_SENSOR evidence")
     }
 
     override fun close() {
-        val value = image
-        image = null
+        val value = ownedEvidence
+        ownedEvidence = null
         value?.close()
     }
 }
@@ -25,14 +35,15 @@ class PairedRawVideoSample<I : AutoCloseable, R> internal constructor(
 /**
  * Exact SENSOR_TIMESTAMP streaming pairer. Overflow is fatal; it never evicts evidence.
  *
- * Android ImageReader Images are special-cased at this ownership boundary: the complete RAW plane
- * is detached to heap-backed evidence and the native Image is closed before it can enter the
- * timestamp-skew map. This means unmatched image/result ordering cannot consume ImageReader.maxImages.
+ * Android ImageReader Images are special-cased at this synchronous ownership boundary: the
+ * meaningful RAW raster is copied to DetachedRawSensorImage and the native Image is closed before
+ * the timestamp-skew map can retain it. Unmatched callback ordering therefore cannot consume
+ * ImageReader.maxImages slots.
  */
 class RawVideoTimestampPairer<I : AutoCloseable, R>(
     private val maximumPendingEntries: Int = M10RawVideoLimits.DEFAULT_PAIR_ENTRIES,
 ) : AutoCloseable {
-    private val images = LinkedHashMap<Long, I>()
+    private val images = LinkedHashMap<Long, AutoCloseable>()
     private val results = LinkedHashMap<Long, ResultRecord<R>>()
     private var closed = false
 
@@ -49,12 +60,12 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
             throw IllegalArgumentException("M10 duplicate image timestamp $timestampNs")
         }
 
-        val ownedImage = detachImageReaderLease(image)
+        val ownedEvidence = detachImageReaderLease(image)
         val result = results.remove(timestampNs)
         if (result != null) {
-            return PairedRawVideoSample(timestampNs, result.frameNumber, ownedImage, result.value)
+            return PairedRawVideoSample(timestampNs, result.frameNumber, ownedEvidence, result.value)
         }
-        images[timestampNs] = ownedImage
+        images[timestampNs] = ownedEvidence
         enforceBound()
         return null
     }
@@ -65,9 +76,9 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         require(frameNumber >= 0L) { "M10 Camera2 frame number cannot be negative" }
         check(!closed) { "M10 timestamp pairer is closed" }
         require(!results.containsKey(timestampNs)) { "M10 duplicate capture-result timestamp $timestampNs" }
-        val image = images.remove(timestampNs)
-        if (image != null) {
-            return PairedRawVideoSample(timestampNs, frameNumber, image, result)
+        val ownedEvidence = images.remove(timestampNs)
+        if (ownedEvidence != null) {
+            return PairedRawVideoSample(timestampNs, frameNumber, ownedEvidence, result)
         }
         results[timestampNs] = ResultRecord(frameNumber, result)
         enforceBound()
@@ -95,10 +106,9 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
         results.clear()
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun detachImageReaderLease(image: I): I {
-        if (image !is Image || image is DetachedRawSensorImage) return image
-        return DetachedRawSensorImage.copyAndClose(image) as I
+    private fun detachImageReaderLease(image: I): AutoCloseable {
+        if (image !is Image) return image
+        return DetachedRawSensorImage.copyAndClose(image)
     }
 
     private fun enforceBound() {
