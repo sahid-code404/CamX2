@@ -32,9 +32,10 @@ architecture migration.
     global references are forbidden.
 17. Ordinary camera and debug-OTA behavior uses no `Service`, `ForegroundService`, `JobService`, or
     `WorkManager`.
-18. The `devOta` build stays debuggable, keeps package `com.sahidcode404.camx`, and uses one permanent
-    committed development signer with API-23-compatible v1 and v2 APK signatures. Regenerating it
-    breaks the channel.
+18. The `devOta` build stays debuggable, keeps Android install identity `com.sahidcode404.camx2`, and
+    uses one permanent committed development signer with API-23-compatible v1 and v2 APK signatures.
+    The migrated source namespace may remain `com.sahidcode404.camx`; changing it is not required for
+    side-by-side installation. Regenerating the signer breaks the CamX2 development channel.
 19. State, ownership, topology, cache identity, JNI, RAW pairing, signer verification, and guard
     changes require Tier-A review.
 20. The application compatibility baseline is exactly Android API 23. The Gradle model, every variant,
