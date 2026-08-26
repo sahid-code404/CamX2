@@ -30,6 +30,43 @@ class RawVideoTimestampPairerTest {
     }
 
     @Test
+    fun detachedByteOverflowClosesAllOwnedEvidenceAndFailsInsteadOfDropping() {
+        val closes = AtomicInteger(0)
+        val pairer = RawVideoTimestampPairer<TestImage, String>(
+            maximumPendingEntries = 4,
+            maximumPendingImageBytes = 10L,
+        )
+
+        pairer.offerImage(1L, TestImage(closes, retainedBytes = 6L))
+        assertEquals(6L, pairer.pendingImageByteCount())
+        val failure = runCatching {
+            pairer.offerImage(2L, TestImage(closes, retainedBytes = 6L))
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(2, closes.get())
+        assertEquals(0L, pairer.pendingImageByteCount())
+    }
+
+    @Test
+    fun detachedFrameByteExtentCannotChangeInsidePairingEpoch() {
+        val closes = AtomicInteger(0)
+        val pairer = RawVideoTimestampPairer<TestImage, String>(
+            maximumPendingEntries = 4,
+            maximumPendingImageBytes = 100L,
+        )
+
+        pairer.offerImage(1L, TestImage(closes, retainedBytes = 6L))
+        val failure = runCatching {
+            pairer.offerImage(2L, TestImage(closes, retainedBytes = 7L))
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals(2, closes.get())
+        assertEquals(0L, pairer.pendingImageByteCount())
+    }
+
+    @Test
     fun duplicateImageTimestampClosesRejectedOwnership() {
         val closes = AtomicInteger(0)
         val pairer = RawVideoTimestampPairer<TestImage, String>(maximumPendingEntries = 4)
@@ -65,7 +102,10 @@ class RawVideoTimestampPairerTest {
         pairer.close()
     }
 
-    private class TestImage(private val closes: AtomicInteger = AtomicInteger()) : AutoCloseable {
+    private class TestImage(
+        private val closes: AtomicInteger = AtomicInteger(),
+        override val retainedByteCount: Long = 0L,
+    ) : RetainedByteEvidence {
         override fun close() { closes.incrementAndGet() }
     }
 }
