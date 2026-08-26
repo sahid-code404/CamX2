@@ -126,6 +126,9 @@ jobs:
       - name: Verify M6 alignment visibility and uncertainty
         run: bash ./scripts/verify-m6-alignment.sh
 
+      - name: Verify M7 computational photo reconstruction
+        run: bash ./scripts/verify-m7-reconstruction.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
