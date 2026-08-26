@@ -48,6 +48,21 @@ for token in \
 done
 
 for token in \
+  'ArrayBlockingQueue<SensorRawVideoFrameBatch>(reservation.ingestQueueFrames)' \
+  'assembler.assemble(' \
+  'queue.offer(' ; do
+  rg --fixed-strings --quiet "$token" "$ingest" || {
+    echo "M10 detached ingest ownership contract missing: $token" >&2
+    exit 1
+  }
+done
+
+if rg --fixed-strings --quiet 'ArrayBlockingQueue<PairedRawVideoSample<Image, CaptureResult>>' "$ingest"; then
+  echo 'M10 ingest queue must not retain live Camera2 Image ownership.' >&2
+  exit 1
+fi
+
+for token in \
   'AndroidSensorRawVideoStore(appContext)' \
   'controller.startRawVideo(displayRotation, rawVideoStore)' \
   'controller.stopRawVideo()'; do
