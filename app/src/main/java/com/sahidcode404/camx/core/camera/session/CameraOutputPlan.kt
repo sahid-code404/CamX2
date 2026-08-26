@@ -22,7 +22,7 @@ data class CameraOutputBinding(
 ) {
     init {
         require(role != CameraOutputRole.RAW || lifetime != CameraRequestLifetime.REPEATING) {
-            "RAW output must use an explicit sensor transaction lifetime, never the preview lifetime"
+            "RAW output is transaction-only; use an explicit sensor lifetime instead of the preview repeating lifetime"
         }
         require(role != CameraOutputRole.PREVIEW || lifetime == CameraRequestLifetime.REPEATING) {
             "Preview output remains a repeating-session binding"
