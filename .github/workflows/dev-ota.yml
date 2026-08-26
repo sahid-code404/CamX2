@@ -1,0 +1,151 @@
+name: Development OTA Publisher
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact green source SHA
+        required: true
+        type: string
+      source_run_id:
+        description: Exact green CI run containing the verified artifact
+        required: true
+        type: string
+
+concurrency:
+  group: camx-dev-ota
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish exact green artifact to dev-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      EXPECTED_DEV_SIGNER_SHA256: f6b8a3f492d4fb9d2dbf58937d3995f8f1e0f79433c4f3e25b9930218e694d8c
+
+    steps:
+      - name: Check out exact green source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Download exact CI artifact
+        run: |
+          set -euo pipefail
+          gh run download "$SOURCE_RUN_ID" \
+            --name "CamX-dev-ota-${SOURCE_SHA}" \
+            --dir artifacts-dev-ota
+
+      - name: Verify source binding and checksums
+        run: |
+          set -euo pipefail
+          test "$(jq -r '.gitSha' artifacts-dev-ota/dev-manifest.json)" = "$SOURCE_SHA"
+          (
+            cd artifacts-dev-ota
+            sha256sum --check SHA256SUMS.txt
+          )
+          test "$(sha256sum artifacts-dev-ota/CamX-dev.apk | awk '{print $1}')" = \
+            "$(jq -r '.sha256' artifacts-dev-ota/dev-manifest.json)"
+          test "$(jq -r '.applicationId' artifacts-dev-ota/dev-manifest.json)" = \
+            'com.sahidcode404.camx'
+          test "$(jq -r '.minSdk' artifacts-dev-ota/dev-manifest.json)" = '23'
+          test "$(jq -r '.signingCertSha256' artifacts-dev-ota/dev-manifest.json)" = \
+            "$EXPECTED_DEV_SIGNER_SHA256"
+          test "$(tr -d '[:space:]' < tools/dev-signing/EXPECTED_CERT_SHA256)" = \
+            "$EXPECTED_DEV_SIGNER_SHA256"
+
+      - name: Reject stale or conflicting rolling publication
+        id: freshness
+        run: |
+          set -euo pipefail
+          publish=true
+          finalize=true
+          if gh release view dev-latest >/dev/null 2>&1; then
+            mapfile -t assets < <(gh release view dev-latest --json assets --jq '.assets[].name')
+            if printf '%s\n' "${assets[@]}" | grep -Fxq dev-manifest.json; then
+              printf '%s\n' "${assets[@]}" | grep -Fxq CamX-dev.apk || {
+                echo 'Existing rolling release is incomplete; refusing a downgrade repair.' >&2
+                exit 1
+              }
+              mkdir -p current-dev-ota
+              gh release download dev-latest \
+                --pattern dev-manifest.json \
+                --pattern CamX-dev.apk \
+                --dir current-dev-ota
+              current_version="$(jq -er '.versionCode | select(type == "number" and . > 0)' \
+                current-dev-ota/dev-manifest.json)"
+              current_sha="$(jq -er '.gitSha | select(type == "string")' \
+                current-dev-ota/dev-manifest.json)"
+              current_apk_sha="$(jq -er '.sha256 | select(type == "string")' \
+                current-dev-ota/dev-manifest.json)"
+              current_signer="$(jq -er '.signingCertSha256 | select(type == "string")' \
+                current-dev-ota/dev-manifest.json)"
+              candidate_signer="$(jq -er '.signingCertSha256' artifacts-dev-ota/dev-manifest.json)"
+              test "$current_signer" = "$EXPECTED_DEV_SIGNER_SHA256" || {
+                echo 'Existing release signer conflicts with the permanent workflow anchor.' >&2
+                exit 1
+              }
+              test "$candidate_signer" = "$current_signer" || {
+                echo 'Candidate would break development signer continuity.' >&2
+                exit 1
+              }
+              test "$(sha256sum current-dev-ota/CamX-dev.apk | awk '{print $1}')" = "$current_apk_sha" || {
+                echo 'Existing rolling release checksum is invalid; refusing to overwrite it blindly.' >&2
+                exit 1
+              }
+              candidate_version="$(jq -er '.versionCode' artifacts-dev-ota/dev-manifest.json)"
+              if ((candidate_version < current_version)); then
+                publish=false
+                finalize=false
+              elif ((candidate_version == current_version)); then
+                if [[ "$current_sha" != "$SOURCE_SHA" ]]; then
+                  echo 'Equal development versionCode is bound to a different source SHA.' >&2
+                  exit 1
+                fi
+                publish=false
+              fi
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "finalize=$finalize" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure rolling release exists
+        if: ${{ steps.freshness.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          if ! gh release view dev-latest >/dev/null 2>&1; then
+            gh release create dev-latest \
+              --target "$SOURCE_SHA" \
+              --title 'CamX Development OTA' \
+              --notes "Verified development build for ${SOURCE_SHA}" \
+              --prerelease
+          fi
+
+      - name: Replace rolling assets fail-safe
+        if: ${{ steps.freshness.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          gh release upload dev-latest \
+            artifacts-dev-ota/CamX-dev.apk \
+            artifacts-dev-ota/dev-manifest.json \
+            --clobber
+
+      - name: Move rolling tag after complete asset upload
+        if: ${{ steps.freshness.outputs.finalize == 'true' }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/dev-latest" \
+            -f sha="$SOURCE_SHA" -F force=true >/dev/null
+          gh release edit dev-latest \
+            --title 'CamX Development OTA' \
+            --notes "Verified development build for ${SOURCE_SHA}" \
+            --prerelease
