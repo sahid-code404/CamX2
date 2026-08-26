@@ -120,6 +120,9 @@ jobs:
       - name: Verify M4 bounded RAW burst acquisition
         run: bash ./scripts/verify-m4-burst.sh
 
+      - name: Verify M5 calibration and noise reference
+        run: bash ./scripts/verify-m5-calibration.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
