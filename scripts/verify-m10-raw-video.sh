@@ -7,6 +7,7 @@ cd "$root"
 readonly owner='app/src/main/java/com/sahidcode404/camx/core/camera/session/CameraSessionController.kt'
 readonly model='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/SensorRawVideoModel.kt'
 readonly pairer='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/RawVideoTimestampPairer.kt'
+readonly detached='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/DetachedRawSensorImage.kt'
 readonly assembler='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/SensorRawVideoFrameAssembler.kt'
 readonly ingest='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/AndroidSensorRawVideoIngest.kt'
 readonly spool='app/src/main/java/com/sahidcode404/camx/core/rawvideo/recording/CxrbSensorRawVideoSpool.kt'
@@ -15,7 +16,7 @@ readonly graph='app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Vi
 readonly activity='app/src/main/java/com/sahidcode404/camx/MainActivity.kt'
 readonly doc='docs/computational-raw/M10_SENSOR_RAW_VIDEO_ACQUISITION.md'
 
-for file in "$owner" "$model" "$pairer" "$assembler" "$ingest" "$spool" "$store" "$graph" "$activity" "$doc"; do
+for file in "$owner" "$model" "$pairer" "$detached" "$assembler" "$ingest" "$spool" "$store" "$graph" "$activity" "$doc"; do
   test -s "$file" || { echo "M10 artifact missing: $file" >&2; exit 1; }
 done
 
@@ -63,6 +64,25 @@ if rg --fixed-strings --quiet 'ArrayBlockingQueue<PairedRawVideoSample<Image, Ca
 fi
 
 for token in \
+  'DetachedRawSensorImage.copyAndClose(image)' \
+  'image is DetachedRawSensorImage'; do
+  rg --fixed-strings --quiet "$token" "$pairer" || {
+    echo "M10 timestamp-pairing lease detachment missing: $token" >&2
+    exit 1
+  }
+done
+
+for token in \
+  'class DetachedRawSensorImage' \
+  'source.close()' \
+  'ByteBuffer.wrap(bytes).asReadOnlyBuffer()'; do
+  rg --fixed-strings --quiet "$token" "$detached" || {
+    echo "M10 detached RAW image contract missing: $token" >&2
+    exit 1
+  }
+done
+
+for token in \
   'AndroidSensorRawVideoStore(appContext)' \
   'controller.startRawVideo(displayRotation, rawVideoStore)' \
   'controller.stopRawVideo()'; do
@@ -91,7 +111,7 @@ fi
 # CameraCaptureSession, CameraManager, and ImageReader remain prohibited in recording modules.
 if rg --line-number \
   '^import android\.hardware\.camera2\.(CameraDevice|CameraCaptureSession|CameraManager)|^import android\.media\.ImageReader' \
-  "$model" "$pairer" "$assembler" "$ingest" "$spool" "$store"; then
+  "$model" "$pairer" "$detached" "$assembler" "$ingest" "$spool" "$store"; then
   echo 'M10 recording modules must not become independent Camera2/ImageReader owners.' >&2
   exit 1
 fi
