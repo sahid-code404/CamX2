@@ -53,8 +53,14 @@ class RawVideoTimestampPairer<I : AutoCloseable, R>(
 
     @Synchronized
     fun offerImage(timestampNs: Long, image: I): PairedRawVideoSample<I, R>? {
-        require(timestampNs > 0L) { "M10 image timestamp must be positive" }
-        check(!closed) { "M10 timestamp pairer is closed" }
+        if (timestampNs <= 0L) {
+            runCatching { image.close() }
+            throw IllegalArgumentException("M10 image timestamp must be positive")
+        }
+        if (closed) {
+            runCatching { image.close() }
+            throw IllegalStateException("M10 timestamp pairer is closed")
+        }
         if (images.containsKey(timestampNs)) {
             image.close()
             throw IllegalArgumentException("M10 duplicate image timestamp $timestampNs")
