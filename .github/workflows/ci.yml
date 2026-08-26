@@ -117,6 +117,9 @@ jobs:
       - name: Verify M3 deterministic typed DAG/compiler
         run: ./scripts/verify-m3-graph.sh
 
+      - name: Verify M4 bounded RAW burst acquisition
+        run: bash ./scripts/verify-m4-burst.sh
+
       - name: Verify real photo shutter and truthful video UI
         run: bash ./scripts/verify-camera-capture-ui.sh
 
