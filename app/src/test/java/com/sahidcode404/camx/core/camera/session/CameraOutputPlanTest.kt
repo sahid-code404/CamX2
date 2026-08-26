@@ -28,4 +28,26 @@ class CameraOutputPlanTest {
             plan.bindings.single { it.role == CameraOutputRole.RAW }.lifetime,
         )
     }
+
+    @Test
+    fun temporaryRawBurstPlanIsExplicitlyBoundedAndNeverRepeating() {
+        val token = CaptureToken(9L)
+        val plan = CameraSessionOutputPlan.temporaryRawBurst(PreviewSurfaceIdentity(3L), token)
+        assertEquals(token, plan.captureToken)
+        assertEquals(
+            CameraRequestLifetime.BOUNDED_BURST,
+            plan.bindings.single { it.role == CameraOutputRole.RAW }.lifetime,
+        )
+        assertEquals(
+            CameraRequestLifetime.REPEATING,
+            plan.bindings.single { it.role == CameraOutputRole.PREVIEW }.lifetime,
+        )
+    }
+
+    @Test
+    fun previewOutputCannotMasqueradeAsBurstLifetime() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraOutputBinding(CameraOutputRole.PREVIEW, CameraRequestLifetime.BOUNDED_BURST)
+        }
+    }
 }
