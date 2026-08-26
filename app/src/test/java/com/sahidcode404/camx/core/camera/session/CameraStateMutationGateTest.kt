@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
@@ -61,7 +62,10 @@ class CameraStateMutationGateTest {
                 }
             }
             assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
-            val stale = launch(Dispatchers.Default) {
+
+            // Start undispatched so this coroutine deterministically reaches the cancellable
+            // mutex wait while it is still active before cancelAndJoin races with its first dispatch.
+            val stale = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
                 gate.mutate { staleRan = true }
             }
             stale.cancelAndJoin()
