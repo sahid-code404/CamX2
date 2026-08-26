@@ -27,7 +27,7 @@ for token in \
   'SensorRawVideoStatus.Recording(' \
   'restoreAfterRawVideo(' \
   'source.acquireNextImage()' \
-  'CameraDevice.TEMPLATE_RECORD' \
+  'CameraDevice.TEMPLATE_PREVIEW' \
   'setRepeatingRequest(' ; do
   rg --fixed-strings --quiet "$token" "$owner" || {
     echo "M10 controller contract missing: $token" >&2
