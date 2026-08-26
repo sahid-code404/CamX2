@@ -99,8 +99,8 @@ internal class DetachedRawSensorPlane(
     val pixelStride: Int,
     bytes: ByteArray,
 ) {
-    private val buffer = ByteBuffer.wrap(bytes).asReadOnlyBuffer()
+    private val detachedBuffer = ByteBuffer.wrap(bytes).asReadOnlyBuffer()
 
     val buffer: ByteBuffer
-        get() = buffer.duplicate()
+        get() = detachedBuffer.duplicate()
 }
