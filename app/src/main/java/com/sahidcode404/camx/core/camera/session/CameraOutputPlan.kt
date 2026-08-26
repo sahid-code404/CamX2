@@ -12,6 +12,7 @@ enum class CameraOutputRole {
 enum class CameraRequestLifetime {
     REPEATING,
     ONE_SHOT,
+    BOUNDED_BURST,
 }
 
 data class CameraOutputBinding(
@@ -19,8 +20,11 @@ data class CameraOutputBinding(
     val lifetime: CameraRequestLifetime,
 ) {
     init {
-        require(role != CameraOutputRole.RAW || lifetime == CameraRequestLifetime.ONE_SHOT) {
+        require(role != CameraOutputRole.RAW || lifetime != CameraRequestLifetime.REPEATING) {
             "RAW output is transaction-only and can never be attached to a repeating request"
+        }
+        require(role != CameraOutputRole.PREVIEW || lifetime == CameraRequestLifetime.REPEATING) {
+            "Preview output remains a repeating-session binding"
         }
     }
 }
@@ -51,6 +55,18 @@ class CameraSessionOutputPlan private constructor(
             bindings = listOf(
                 CameraOutputBinding(CameraOutputRole.PREVIEW, CameraRequestLifetime.REPEATING),
                 CameraOutputBinding(CameraOutputRole.RAW, CameraRequestLifetime.ONE_SHOT),
+            ),
+        )
+
+        fun temporaryRawBurst(
+            previewSurfaceIdentity: PreviewSurfaceIdentity,
+            captureToken: CaptureToken,
+        ) = CameraSessionOutputPlan(
+            previewSurfaceIdentity = previewSurfaceIdentity,
+            captureToken = captureToken,
+            bindings = listOf(
+                CameraOutputBinding(CameraOutputRole.PREVIEW, CameraRequestLifetime.REPEATING),
+                CameraOutputBinding(CameraOutputRole.RAW, CameraRequestLifetime.BOUNDED_BURST),
             ),
         )
     }
