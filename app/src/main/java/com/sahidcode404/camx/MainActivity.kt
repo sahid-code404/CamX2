@@ -135,7 +135,25 @@ class MainActivity : ComponentActivity() {
                         val report = result.report
                         captureMessage = if (report.success) {
                             result.cp2Report?.let { cp2 ->
-                                getString(
+                                result.cp3Report?.let { cp3 ->
+                                    if (cp3.success) {
+                                        getString(
+                                            R.string.cp1_cp2_cp3_success,
+                                            report.exactPairsCreated,
+                                            report.requestedFrames,
+                                            cp2.exactDynamicBindings,
+                                            cp3.contributingFrames,
+                                        )
+                                    } else {
+                                        getString(
+                                            R.string.cp1_cp2_cp3_failed,
+                                            report.exactPairsCreated,
+                                            report.requestedFrames,
+                                            cp2.exactDynamicBindings,
+                                            cp3.failureDetail ?: "unknown",
+                                        )
+                                    }
+                                } ?: getString(
                                     R.string.cp1_cp2_success,
                                     report.exactPairsCreated,
                                     report.requestedFrames,
