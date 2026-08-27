@@ -47,9 +47,11 @@ object Cp3ComputationalRawEngine {
                     algorithmId = ALGORITHM_ID,
                     algorithmVersion = ALGORITHM_VERSION,
                     requestedFrames = frameSet.frames.size,
-                    referenceOrdinal = null,
+                    referenceOrdinal = evidence.firstOrNull { it.decision == Cp3FrameDecision.REFERENCE }?.ordinal,
                     exposureIdentityFrames = 0,
-                    alignedFrames = 0,
+                    alignedFrames = evidence.count {
+                        it.decision == Cp3FrameDecision.REFERENCE || it.decision == Cp3FrameDecision.INCLUDED
+                    },
                     contributingFrames = 0,
                     activePixelCount = 0L,
                     multiFramePixelCount = 0L,
@@ -396,8 +398,12 @@ object Cp3ComputationalRawEngine {
         }
         val finite = scores.filter { it.meanNormalizedSquaredResidual.isFinite() }
             .sortedWith(
-                compareBy<AlignmentScore>({ it.meanNormalizedSquaredResidual }, { abs(it.dxPixels) + abs(it.dyPixels) },
-                    { it.dyPixels }, { it.dxPixels }),
+                compareBy<AlignmentScore>(
+                    { it.meanNormalizedSquaredResidual },
+                    { abs(it.dxPixels) + abs(it.dyPixels) },
+                    { it.dyPixels },
+                    { it.dxPixels },
+                ),
             )
         val best = finite.firstOrNull() ?: return AlignmentEstimate(
             dxPixels = 0,
@@ -499,7 +505,7 @@ object Cp3ComputationalRawEngine {
         val digest = MessageDigest.getInstance("SHA-256")
         fun updateString(value: String) {
             digest.update(value.toByteArray(Charsets.UTF_8))
-            digest.update(0)
+            digest.update(0.toByte())
         }
         fun updateInt(value: Int) {
             digest.update((value ushr 24).toByte())
@@ -521,7 +527,7 @@ object Cp3ComputationalRawEngine {
             updateInt(frame.dyPixels)
             updateString(java.lang.Double.toHexString(frame.meanNormalizedSquaredResidual))
             updateString(
-                frame.secondBestMeanNormalizedSquaredResidual?.let(java.lang.Double::toHexString) ?: "null",
+                frame.secondBestMeanNormalizedSquaredResidual?.let { java.lang.Double.toHexString(it) } ?: "null",
             )
         }
         signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }
@@ -660,7 +666,7 @@ data class Cp3FrameEvidence(
     }
 }
 
-data class Cp3FusionReport(
+class Cp3FusionReport(
     val success: Boolean,
     val algorithmId: String,
     val algorithmVersion: Int,
@@ -690,6 +696,7 @@ data class Cp3FusionReport(
     init {
         require(algorithmId.isNotBlank() && algorithmVersion > 0)
         require(requestedFrames > 0)
+        require(referenceOrdinal == null || referenceOrdinal in 0 until requestedFrames)
         require(exposureIdentityFrames in 0..requestedFrames)
         require(alignedFrames in 0..requestedFrames)
         require(contributingFrames in 0..requestedFrames)
@@ -704,7 +711,29 @@ data class Cp3FusionReport(
         require((failureDetail == null) == success)
     }
 
-    fun withEvidencePersisted(persisted: Boolean): Cp3FusionReport = copy(evidencePersisted = persisted)
+    fun withEvidencePersisted(persisted: Boolean): Cp3FusionReport = Cp3FusionReport(
+        success = success,
+        algorithmId = algorithmId,
+        algorithmVersion = algorithmVersion,
+        requestedFrames = requestedFrames,
+        referenceOrdinal = referenceOrdinal,
+        exposureIdentityFrames = exposureIdentityFrames,
+        alignedFrames = alignedFrames,
+        contributingFrames = contributingFrames,
+        activePixelCount = activePixelCount,
+        multiFramePixelCount = multiFramePixelCount,
+        referenceOnlyPixelCount = referenceOnlyPixelCount,
+        censoredPixelCount = censoredPixelCount,
+        rejectedPixelMeasurements = rejectedPixelMeasurements,
+        calibrationFingerprintSha256 = calibrationFingerprintSha256,
+        sourceCanonicalSha256 = sourceCanonicalSha256,
+        includedOrdinals = includedOrdinals,
+        frameEvidence = frameEvidence,
+        outputSha256 = outputSha256,
+        fixedPatternNoiseMode = fixedPatternNoiseMode,
+        evidencePersisted = persisted,
+        failureDetail = failureDetail,
+    )
 }
 
 class Cp3FusedCfa internal constructor(
@@ -715,9 +744,11 @@ class Cp3FusedCfa internal constructor(
     contributors: ByteArray,
     val outputSha256: String,
 ) {
-    private val signalDn = signalDn.copyOf()
-    private val knownVarianceDn2 = knownVarianceDn2.copyOf()
-    private val contributors = contributors.copyOf()
+    // The engine creates these arrays exclusively for this object and never mutates them after
+    // construction. Keeping ownership instead of copying avoids doubling a full-resolution CP3 output.
+    private val signalDn = signalDn
+    private val knownVarianceDn2 = knownVarianceDn2
+    private val contributors = contributors
 
     init {
         val expected = activeArea.width.toLong() * activeArea.height.toLong()
