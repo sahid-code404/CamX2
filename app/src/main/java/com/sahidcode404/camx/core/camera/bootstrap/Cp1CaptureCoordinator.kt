@@ -453,6 +453,9 @@ internal class Cp1CaptureCoordinator(
      * application reserve. ART remains free to collect dead transient allocations under pressure.
      */
     private fun cp3ResidentBudgetBytes(): Long {
+        // CP3's own proof already includes every retained RAW byte, the complete fused U16 raster,
+        // and its explicit safety margin. Keep only a small VM reserve here; the previous 48 MiB
+        // second reserve rejected otherwise-admissible 8-frame bursts on constrained Android heaps.
         val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP3_MANAGED_HEAP_RESERVE_BYTES)
             .coerceAtLeast(1L)
         return minOf(CP3_MAX_RESIDENT_BYTES, managedHeapCeiling)
@@ -492,7 +495,7 @@ internal class Cp1CaptureCoordinator(
     private companion object {
         const val CP1_REQUESTED_FRAMES = 8
         const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L
-        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L
+        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 8L * 1024L * 1024L
         const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
     }
 }

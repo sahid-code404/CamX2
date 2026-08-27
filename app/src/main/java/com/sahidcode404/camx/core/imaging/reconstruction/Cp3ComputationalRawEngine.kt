@@ -11,6 +11,7 @@ import java.security.MessageDigest
 import java.util.Collections
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * CP3 is the first production-connected multi-frame sensor-domain fusion probe. It consumes the exact
@@ -19,8 +20,8 @@ import kotlin.math.max
  * to [0,1], then converted back to DN^2 using the per-frame black/white range.
  */
 object Cp3ComputationalRawEngine {
-    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v2-low-memory"
-    const val ALGORITHM_VERSION = 2
+    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v3-u16"
+    const val ALGORITHM_VERSION = 3
 
     private const val SEARCH_RADIUS_PIXELS = 8
     private const val SAMPLE_STEP_PIXELS = 32
@@ -30,10 +31,10 @@ object Cp3ComputationalRawEngine {
     private const val MIN_ALIGNMENT_COST_SEPARATION = 0.02
     private const val PER_PIXEL_RESIDUAL_SIGMA = 6.0
     private const val MIN_VARIANCE_DN2 = 1e-9
-    // Production CP3 retains only the fused signal raster. Per-pixel variance and contributor
-    // counts are fusion temporaries represented by aggregate report counters, not full-resolution
-    // persistent arrays. This cuts CP3 output residency from 9 B/px to 4 B/px.
-    private const val OUTPUT_BYTES_PER_PIXEL = 4L
+    // Production CP3 retains only one unsigned 16-bit black-subtracted CFA signal raster.
+    // RAW input is 16-bit sensor DN, so Float32 storage doubled the persistent output footprint
+    // without adding sensor-domain precision. U16 keeps the fused negative bounded at 2 B/px.
+    private const val OUTPUT_BYTES_PER_PIXEL = 2L
     private const val SAFETY_MARGIN_BYTES = 1024L * 1024L
     private const val MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
 
@@ -204,13 +205,19 @@ object Cp3ComputationalRawEngine {
             "CP3 resident byte proof overflow",
         )
         if (maxResidentBytes !in requiredResident..MAX_RESIDENT_BYTES) {
-            return failed("CP3 resident-memory admission failed", evidence)
+            return failed(
+                "CP3 resident-memory admission failed: required=${requiredResident / (1024L * 1024L)}MiB " +
+                    "budget=${maxResidentBytes / (1024L * 1024L)}MiB " +
+                    "frames=${frameSet.totalCanonicalBytes / (1024L * 1024L)}MiB " +
+                    "output=${outputBytes / (1024L * 1024L)}MiB",
+                evidence,
+            )
         }
 
         val acceptedByOrdinal = accepted.associateBy { it.frame.ordinal }
         val alignmentByOrdinal = evidence.associateBy { it.ordinal }
         val includedOrdinals = accepted.map { it.frame.ordinal }.sorted()
-        val signalDn = FloatArray(activePixels.toInt())
+        val signalDn = ShortArray(activePixels.toInt())
         var multiFramePixels = 0L
         var referenceOnlyPixels = 0L
         var censoredPixels = 0L
@@ -221,7 +228,7 @@ object Cp3ComputationalRawEngine {
             for (x in active.left until active.left + active.width) {
                 val referenceSample = sample(reference, x, y)
                 if (referenceSample.censored) {
-                    signalDn[outputIndex] = finiteFloat(referenceSample.signalDn, "CP3 reference signal")
+                    signalDn[outputIndex] = finiteU16(referenceSample.signalDn, "CP3 reference signal")
                     referenceOnlyPixels++
                     censoredPixels++
                     outputIndex++
@@ -267,7 +274,7 @@ object Cp3ComputationalRawEngine {
                     "CP3 uncensored reference pixel must remain a deterministic fallback"
                 }
                 val fused = sumWeightedSignal / sumWeight
-                signalDn[outputIndex] = finiteFloat(fused, "CP3 fused signal")
+                signalDn[outputIndex] = finiteU16(fused, "CP3 fused signal")
                 if (contributorCount >= 2) multiFramePixels++ else referenceOnlyPixels++
                 outputIndex++
             }
@@ -487,7 +494,7 @@ object Cp3ComputationalRawEngine {
         active: IntRect,
         includedOrdinals: List<Int>,
         evidence: List<Cp3FrameEvidence>,
-        signalDn: FloatArray,
+        signalDn: ShortArray,
     ): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun updateString(value: String) {
@@ -517,10 +524,10 @@ object Cp3ComputationalRawEngine {
                 frame.secondBestMeanNormalizedSquaredResidual?.let { java.lang.Double.toHexString(it) } ?: "null",
             )
         }
-        // V2 hashes the actual persistent fused raster plus immutable provenance. Noise and
+        // V3 hashes the actual persistent U16 fused raster plus immutable provenance. Noise and
         // contributor evidence still controls fusion and report counters but is not duplicated into
         // full-resolution persistent diagnostic arrays.
-        signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }
+        signalDn.forEach { updateInt(it.toInt() and 0xffff) }
         return digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
@@ -549,11 +556,9 @@ object Cp3ComputationalRawEngine {
         throw IllegalArgumentException(message, error)
     }
 
-    private fun finiteFloat(value: Double, label: String): Float {
+    private fun finiteU16(value: Double, label: String): Short {
         require(value.isFinite() && value >= 0.0) { "$label must be finite and non-negative" }
-        val result = value.toFloat()
-        require(result.isFinite()) { "$label exceeds deterministic Float storage" }
-        return result
+        return value.coerceAtMost(0xffff.toDouble()).roundToInt().toShort()
     }
 
     private data class ExposureKey(val exposureTimeNs: Long, val sensitivityIso: Int)
@@ -727,12 +732,28 @@ class Cp3FusionReport(
 class Cp3FusedCfa internal constructor(
     val activeArea: IntRect,
     val cfaPattern: CfaPattern,
-    signalDn: FloatArray,
+    signalDn: ShortArray,
     val outputSha256: String,
 ) {
-    // CP3 owns the fused signal array exclusively and never mutates it after construction. Variance
-    // and contributor maps are deliberately not retained at full resolution in the production path.
+    // Ownership is transferred from the engine. The backing U16 raster is private and is never
+    // mutated after construction, so immutability does not require a second full-resolution copy.
     private val signalDn = signalDn
+
+    internal constructor(
+        activeArea: IntRect,
+        cfaPattern: CfaPattern,
+        signalDn: FloatArray,
+        outputSha256: String,
+    ) : this(
+        activeArea = activeArea,
+        cfaPattern = cfaPattern,
+        signalDn = ShortArray(signalDn.size) { index ->
+            val value = signalDn[index]
+            require(value.isFinite() && value >= 0f)
+            value.coerceAtMost(0xffff.toFloat()).roundToInt().toShort()
+        },
+        outputSha256 = outputSha256,
+    )
 
     val pixelCount: Int get() = signalDn.size
 
@@ -743,11 +764,11 @@ class Cp3FusedCfa internal constructor(
         require(outputSha256.length == 64)
     }
 
-    fun copySignalDn(): FloatArray = signalDn.copyOf()
+    fun copySignalDn(): FloatArray = FloatArray(signalDn.size) { index -> signalDnAt(index) }
 
     internal fun signalDnAt(index: Int): Float {
         require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }
-        return signalDn[index]
+        return (signalDn[index].toInt() and 0xffff).toFloat()
     }
 }
 

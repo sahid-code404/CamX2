@@ -65,7 +65,7 @@ class Cp4ComputationalDngWriter {
         val white = static.whiteLevel
             ?: throw IllegalArgumentException("CP4 requires the real Camera2 white level")
         val outputWhite = ceil(black.maxOf { white.toDouble() - it.toDouble() }).toLong()
-        require(outputWhite in 1..0xffff_ffffL) { "CP4 output white level is not representable in DNG" }
+        require(outputWhite in 1..0xffffL) { "CP4 U16 output white level is not representable in DNG" }
 
         val color1 = static.colorTransform1
             ?: throw IllegalArgumentException("CP4 cannot write a color CFA DNG without SENSOR_COLOR_TRANSFORM1")
@@ -90,7 +90,7 @@ class Cp4ComputationalDngWriter {
         val pixels = checkedMultiply(width.toLong(), height.toLong(), "CP4 pixel count overflow")
         require(pixels in 1..MAX_IMAGE_PIXELS) { "CP4 raster exceeds the bounded writer" }
         require(pixels <= Int.MAX_VALUE.toLong()) { "CP4 raster cannot be addressed by the current JVM implementation" }
-        val imageBytes = checkedMultiply(pixels, FLOAT_BYTES, "CP4 float raster byte count overflow")
+        val imageBytes = checkedMultiply(pixels, UINT16_BYTES, "CP4 U16 raster byte count overflow")
         val rowsPerStrip = minOf(ROWS_PER_STRIP, height)
         val stripCount = ((height.toLong() + rowsPerStrip - 1L) / rowsPerStrip).toInt()
         require(stripCount in 1..MAX_STRIPS) { "CP4 strip table exceeds its bound" }
@@ -108,7 +108,7 @@ class Cp4ComputationalDngWriter {
             val rowCount = minOf(rowsPerStrip, height - firstRow)
             checkedMultiply(
                 checkedMultiply(rowCount.toLong(), width.toLong(), "CP4 strip pixel count overflow"),
-                FLOAT_BYTES,
+                UINT16_BYTES,
                 "CP4 strip byte count overflow",
             )
         }
@@ -117,7 +117,7 @@ class Cp4ComputationalDngWriter {
         val entries = ArrayList<TiffEntry>()
         entries += longEntry(TAG_IMAGE_WIDTH, width.toLong())
         entries += longEntry(TAG_IMAGE_LENGTH, height.toLong())
-        entries += shortEntry(TAG_BITS_PER_SAMPLE, 32)
+        entries += shortEntry(TAG_BITS_PER_SAMPLE, 16)
         entries += shortEntry(TAG_COMPRESSION, COMPRESSION_NONE)
         entries += shortEntry(TAG_PHOTOMETRIC_INTERPRETATION, PHOTOMETRIC_CFA)
         entries += TiffEntry(TAG_STRIP_OFFSETS, TYPE_LONG, stripCount.toLong(), stripOffsetsPayload)
@@ -127,7 +127,7 @@ class Cp4ComputationalDngWriter {
         entries += TiffEntry(TAG_STRIP_BYTE_COUNTS, TYPE_LONG, stripCount.toLong(), uint32ArrayBytes(stripByteCounts))
         entries += shortEntry(TAG_PLANAR_CONFIGURATION, PLANAR_CHUNKY)
         entries += asciiEntry(TAG_SOFTWARE, "CamX2 CP4")
-        entries += shortEntry(TAG_SAMPLE_FORMAT, SAMPLE_FORMAT_IEEE_FLOAT)
+        entries += shortEntry(TAG_SAMPLE_FORMAT, SAMPLE_FORMAT_UNSIGNED_INT)
         entries += TiffEntry(TAG_CFA_REPEAT_PATTERN_DIM, TYPE_SHORT, 2L, shortArrayBytes(intArrayOf(2, 2)))
         entries += TiffEntry(TAG_CFA_PATTERN, TYPE_BYTE, 4L, cfaPatternBytes(fused.cfaPattern, active.left, active.top))
         entries += TiffEntry(TAG_DNG_VERSION, TYPE_BYTE, 4L, byteArrayOf(1, 4, 0, 0))
@@ -219,8 +219,7 @@ class Cp4ComputationalDngWriter {
         }
         putUInt32(metadata, entryOffset, 0L)
 
-        // Stream CP3's immutable signal directly. A second full-resolution FloatArray would make
-        // CP4 itself the next memory spike immediately after low-memory CP3 succeeds.
+        // Stream CP3's immutable U16 signal directly. CP4 never materializes another full raster.
         require(fused.pixelCount.toLong() == pixels)
         val digest = MessageDigest.getInstance("SHA-256")
         val counted = CountingOutputStream(DigestOutputStream(output, digest), maxOutputBytes)
@@ -231,7 +230,7 @@ class Cp4ComputationalDngWriter {
         for (index in 0 until fused.pixelCount) {
             val sample = fused.signalDnAt(index)
             require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }
-            writeFloat32(counted, minOf(sample.toDouble(), outputWhite.toDouble()).toFloat())
+            writeUInt16(counted, minOf(sample.toInt(), outputWhite.toInt()))
         }
         check(counted.byteCount == stripCursor) { "CP4 byte count diverged from deterministic TIFF layout" }
         counted.flush()
@@ -249,8 +248,8 @@ class Cp4ComputationalDngWriter {
     }
 
     private fun privateManifest(report: Cp3FusionReport, fused: Cp3FusedCfa): String = buildString {
-        append("camx2-cp4-computational-dng-v1\n")
-        append("encoding=float32-black-subtracted-linear-cfa\n")
+        append("camx2-cp4-computational-dng-v2\n")
+        append("encoding=uint16-black-subtracted-linear-cfa\n")
         append("cp3.algorithmId=").append(report.algorithmId).append('\n')
         append("cp3.algorithmVersion=").append(report.algorithmVersion).append('\n')
         append("cp3.outputSha256=").append(fused.outputSha256).append('\n')
@@ -401,12 +400,10 @@ class Cp4ComputationalDngWriter {
         repeat(count.toInt()) { output.write(0) }
     }
 
-    private fun writeFloat32(output: OutputStream, value: Float) {
-        val bits = java.lang.Float.floatToIntBits(value)
-        output.write(bits)
-        output.write(bits ushr 8)
-        output.write(bits ushr 16)
-        output.write(bits ushr 24)
+    private fun writeUInt16(output: OutputStream, value: Int) {
+        require(value in 0..0xffff)
+        output.write(value)
+        output.write(value ushr 8)
     }
 
     private fun shortArrayBytes(values: IntArray): ByteArray = ByteArray(values.size * 2).also { bytes ->
@@ -470,7 +467,7 @@ class Cp4ComputationalDngWriter {
         const val MAX_IFD_ENTRIES = 64
         const val MAX_STRIPS = 65_536
         const val ROWS_PER_STRIP = 64
-        const val FLOAT_BYTES = 4L
+        const val UINT16_BYTES = 2L
         const val TIFF_HEADER_BYTES = 8L
         const val TIFF_ENTRY_BYTES = 12L
         const val TIFF_MAGIC = 42
@@ -484,7 +481,7 @@ class Cp4ComputationalDngWriter {
         const val COMPRESSION_NONE = 1
         const val PHOTOMETRIC_CFA = 32803
         const val PLANAR_CHUNKY = 1
-        const val SAMPLE_FORMAT_IEEE_FLOAT = 3
+        const val SAMPLE_FORMAT_UNSIGNED_INT = 1
         const val CFA_LAYOUT_RECTANGULAR = 1
         const val CFA_RED: Byte = 0
         const val CFA_GREEN: Byte = 1

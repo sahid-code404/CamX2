@@ -50,13 +50,13 @@ class Cp3ComputationalRawEngineTest {
     }
 
     @Test
-    fun signalOnlyResidentBudgetAdmitsFourBytesPerPixel() {
+    fun u16SignalResidentBudgetAdmitsTwoBytesPerPixel() {
         val frameSet = frameSet(candidateDx = 2)
         val calibration = calibration(frameSet)
         val pixels = SIZE.toLong() * SIZE.toLong()
-        val exactV2Budget = frameSet.totalCanonicalBytes + pixels * 4L + 1024L * 1024L
+        val exactV3Budget = frameSet.totalCanonicalBytes + pixels * 2L + 1024L * 1024L
 
-        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV2Budget)
+        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV3Budget)
 
         assertTrue(outcome is Cp3FusionOutcome.Fused)
     }

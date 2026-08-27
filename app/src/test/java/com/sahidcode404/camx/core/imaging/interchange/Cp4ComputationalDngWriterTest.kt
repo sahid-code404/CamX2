@@ -67,6 +67,8 @@ class Cp4ComputationalDngWriterTest {
         assertEquals('I'.code, first.toByteArray()[0].toInt())
         assertEquals('I'.code, first.toByteArray()[1].toInt())
         assertEquals(42, uint16(first.toByteArray(), 2))
+        assertEquals(16, uint16(tagPayload(first.toByteArray(), 258), 0))
+        assertEquals(1, uint16(tagPayload(first.toByteArray(), 339), 0))
     }
 
     @Test
