@@ -12,7 +12,7 @@ import java.security.MessageDigest
 import kotlin.math.ceil
 
 /**
- * CP4 writes the production-connected CP3 fused CFA as one standards-shaped float DNG.
+ * CP4 writes the production-connected CP3 fused CFA as one standards-shaped unsigned-16 DNG.
  *
  * The writer consumes only immutable CP2/CP3 evidence. Camera2 objects never cross this boundary.
  * CP2 Camera2 rational matrices are written verbatim into their corresponding DNG tags; missing
@@ -227,10 +227,19 @@ class Cp4ComputationalDngWriter {
         writePadding(counted, privateOffset - counted.byteCount)
         counted.write(manifest)
         writePadding(counted, imageOffset - counted.byteCount)
-        for (index in 0 until fused.pixelCount) {
-            val sample = fused.signalDnAt(index)
-            require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }
-            writeUInt16(counted, minOf(sample.toInt(), outputWhite.toInt()))
+        val rowBytesLong = checkedMultiply(width.toLong(), UINT16_BYTES, "CP4 row byte count overflow")
+        require(rowBytesLong <= Int.MAX_VALUE.toLong()) { "CP4 row cannot be addressed by a JVM byte array" }
+        val rowBytes = ByteArray(rowBytesLong.toInt())
+        var firstPixel = 0
+        repeat(height) {
+            fused.writeU16LittleEndian(
+                startIndex = firstPixel,
+                count = width,
+                maxValue = outputWhite.toInt(),
+                destination = rowBytes,
+            )
+            counted.write(rowBytes)
+            firstPixel += width
         }
         check(counted.byteCount == stripCursor) { "CP4 byte count diverged from deterministic TIFF layout" }
         counted.flush()
@@ -397,13 +406,14 @@ class Cp4ComputationalDngWriter {
 
     private fun writePadding(output: CountingOutputStream, count: Long) {
         require(count >= 0L && count <= MAX_METADATA_BYTES)
-        repeat(count.toInt()) { output.write(0) }
-    }
-
-    private fun writeUInt16(output: OutputStream, value: Int) {
-        require(value in 0..0xffff)
-        output.write(value)
-        output.write(value ushr 8)
+        if (count == 0L) return
+        val zeros = ByteArray(minOf(8 * 1024, count.toInt()))
+        var remaining = count
+        while (remaining > 0L) {
+            val chunk = minOf(remaining, zeros.size.toLong()).toInt()
+            output.write(zeros, 0, chunk)
+            remaining -= chunk.toLong()
+        }
     }
 
     private fun shortArrayBytes(values: IntArray): ByteArray = ByteArray(values.size * 2).also { bytes ->

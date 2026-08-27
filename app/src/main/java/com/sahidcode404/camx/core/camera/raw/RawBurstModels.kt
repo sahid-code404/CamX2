@@ -182,6 +182,14 @@ class ImmutableRawBurstFrame internal constructor(
             ((canonicalRaster[byteIndex + 1].toInt() and 0xff) shl 8)
     }
 
+    /** Internal hot-path read. Bounds are proven by CP3 active/mapped-coordinate checks. */
+    internal fun raw16LittleEndianAtUnchecked(x: Int, y: Int): Int {
+        val pixelIndex = y * rawSize.width + x
+        val byteIndex = pixelIndex shl 1
+        return (canonicalRaster[byteIndex].toInt() and 0xff) or
+            ((canonicalRaster[byteIndex + 1].toInt() and 0xff) shl 8)
+    }
+
     internal fun writeCanonicalRaster(output: OutputStream) {
         output.write(canonicalRaster)
     }

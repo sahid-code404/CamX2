@@ -20,8 +20,8 @@ import kotlin.math.roundToInt
  * to [0,1], then converted back to DN^2 using the per-frame black/white range.
  */
 object Cp3ComputationalRawEngine {
-    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v3-u16"
-    const val ALGORITHM_VERSION = 3
+    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v4-noalloc"
+    const val ALGORITHM_VERSION = 4
 
     private const val SEARCH_RADIUS_PIXELS = 8
     private const val SAMPLE_STEP_PIXELS = 32
@@ -217,58 +217,92 @@ object Cp3ComputationalRawEngine {
         val acceptedByOrdinal = accepted.associateBy { it.frame.ordinal }
         val alignmentByOrdinal = evidence.associateBy { it.ordinal }
         val includedOrdinals = accepted.map { it.frame.ordinal }.sorted()
+        val fusionFrames = includedOrdinals.map { ordinal ->
+            val calibrationForFrame = checkNotNull(acceptedByOrdinal[ordinal])
+            val alignment = checkNotNull(alignmentByOrdinal[ordinal])
+            FusionFrame(
+                calibration = calibrationForFrame,
+                dxPixels = alignment.dxPixels,
+                dyPixels = alignment.dyPixels,
+            )
+        }
+        val referenceFusion = checkNotNull(
+            fusionFrames.firstOrNull { it.calibration.frame.ordinal == referenceOrdinal },
+        )
         val signalDn = ShortArray(activePixels.toInt())
         var multiFramePixels = 0L
         var referenceOnlyPixels = 0L
         var censoredPixels = 0L
         var rejectedMeasurements = 0L
         var outputIndex = 0
+        var y = active.top
+        val activeBottom = active.top + active.height
+        val activeRight = active.left + active.width
 
-        for (y in active.top until active.top + active.height) {
-            for (x in active.left until active.left + active.width) {
-                val referenceSample = sample(reference, x, y)
-                if (referenceSample.censored) {
-                    signalDn[outputIndex] = finiteU16(referenceSample.signalDn, "CP3 reference signal")
+        // Full-resolution CP3 is deliberately allocation-free inside the pixel/frame loops. The old
+        // SensorSample data-class path created tens of millions of short-lived objects on a 12 MP
+        // eight-frame burst and could make ART appear hung in GC. All hot-path state below is scalar.
+        while (y < activeBottom) {
+            var x = active.left
+            while (x < activeRight) {
+                val site = ((y and 1) shl 1) or (x and 1)
+                val referenceCalibration = referenceFusion.calibration
+                val referenceRaw = referenceCalibration.frame.raw16LittleEndianAtUnchecked(x, y)
+                val referenceSignal = sampleSignalDn(referenceCalibration, referenceRaw, site)
+                if (sampleCensored(referenceCalibration, referenceRaw, site)) {
+                    signalDn[outputIndex] = finiteU16(referenceSignal, "CP3 reference signal")
                     referenceOnlyPixels++
                     censoredPixels++
                     outputIndex++
+                    x++
                     continue
                 }
+                val referenceVariance = sampleVarianceDn2(referenceCalibration, referenceSignal, site)
 
                 var sumWeight = 0.0
                 var sumWeightedSignal = 0.0
                 var contributorCount = 0
-                includedOrdinals.forEach { ordinal ->
-                    val candidate = checkNotNull(acceptedByOrdinal[ordinal])
-                    val alignment = checkNotNull(alignmentByOrdinal[ordinal])
-                    val mappedX = x + alignment.dxPixels
-                    val mappedY = y + alignment.dyPixels
+                var frameIndex = 0
+                while (frameIndex < fusionFrames.size) {
+                    val fusionFrame = fusionFrames[frameIndex]
+                    val candidate = fusionFrame.calibration
+                    val mappedX = x + fusionFrame.dxPixels
+                    val mappedY = y + fusionFrame.dyPixels
                     if (!inside(active, mappedX, mappedY)) {
                         rejectedMeasurements++
-                        return@forEach
+                        frameIndex++
+                        continue
                     }
-                    val candidateSample = sample(candidate, mappedX, mappedY)
-                    if (candidateSample.censored) {
+                    val candidateSite = ((mappedY and 1) shl 1) or (mappedX and 1)
+                    val candidateRaw = candidate.frame.raw16LittleEndianAtUnchecked(mappedX, mappedY)
+                    val candidateSignal = sampleSignalDn(candidate, candidateRaw, candidateSite)
+                    if (sampleCensored(candidate, candidateRaw, candidateSite)) {
                         rejectedMeasurements++
-                        return@forEach
+                        frameIndex++
+                        continue
                     }
-                    if (ordinal != referenceOrdinal) {
+                    val candidateVariance = sampleVarianceDn2(candidate, candidateSignal, candidateSite)
+                    if (candidate.frame.ordinal != referenceOrdinal) {
                         val residualVariance = max(
                             MIN_VARIANCE_DN2,
-                            referenceSample.knownVarianceDn2 + candidateSample.knownVarianceDn2,
+                            referenceVariance + candidateVariance,
                         )
-                        val residualSigma = abs(referenceSample.signalDn - candidateSample.signalDn) /
-                            kotlin.math.sqrt(residualVariance)
-                        if (!residualSigma.isFinite() || residualSigma > PER_PIXEL_RESIDUAL_SIGMA) {
+                        val residual = referenceSignal - candidateSignal
+                        if (!residual.isFinite() ||
+                            residual * residual >
+                            PER_PIXEL_RESIDUAL_SIGMA * PER_PIXEL_RESIDUAL_SIGMA * residualVariance
+                        ) {
                             rejectedMeasurements++
-                            return@forEach
+                            frameIndex++
+                            continue
                         }
                     }
-                    val variance = max(candidateSample.knownVarianceDn2, MIN_VARIANCE_DN2)
+                    val variance = max(candidateVariance, MIN_VARIANCE_DN2)
                     val weight = 1.0 / variance
                     sumWeight += weight
-                    sumWeightedSignal += weight * candidateSample.signalDn
+                    sumWeightedSignal += weight * candidateSignal
                     contributorCount++
+                    frameIndex++
                 }
                 check(contributorCount > 0 && sumWeight > 0.0) {
                     "CP3 uncensored reference pixel must remain a deterministic fallback"
@@ -277,7 +311,9 @@ object Cp3ComputationalRawEngine {
                 signalDn[outputIndex] = finiteU16(fused, "CP3 fused signal")
                 if (contributorCount >= 2) multiFramePixels++ else referenceOnlyPixels++
                 outputIndex++
+                x++
             }
+            y++
         }
 
         if (multiFramePixels == 0L) {
@@ -438,14 +474,21 @@ object Cp3ComputationalRawEngine {
                 val mappedX = x + dx
                 val mappedY = y + dy
                 if (inside(active, mappedX, mappedY)) {
-                    val referenceSample = sample(reference, x, y)
-                    val candidateSample = sample(candidate, mappedX, mappedY)
-                    if (!referenceSample.censored && !candidateSample.censored) {
+                    val referenceSite = ((y and 1) shl 1) or (x and 1)
+                    val candidateSite = ((mappedY and 1) shl 1) or (mappedX and 1)
+                    val referenceRaw = reference.frame.raw16LittleEndianAtUnchecked(x, y)
+                    val candidateRaw = candidate.frame.raw16LittleEndianAtUnchecked(mappedX, mappedY)
+                    if (!sampleCensored(reference, referenceRaw, referenceSite) &&
+                        !sampleCensored(candidate, candidateRaw, candidateSite)
+                    ) {
+                        val referenceSignal = sampleSignalDn(reference, referenceRaw, referenceSite)
+                        val candidateSignal = sampleSignalDn(candidate, candidateRaw, candidateSite)
                         val residualVariance = max(
                             MIN_VARIANCE_DN2,
-                            referenceSample.knownVarianceDn2 + candidateSample.knownVarianceDn2,
+                            sampleVarianceDn2(reference, referenceSignal, referenceSite) +
+                                sampleVarianceDn2(candidate, candidateSignal, candidateSite),
                         )
-                        val residual = referenceSample.signalDn - candidateSample.signalDn
+                        val residual = referenceSignal - candidateSignal
                         val normalizedSquared = residual * residual / residualVariance
                         if (normalizedSquared.isFinite()) {
                             pairs++
@@ -468,23 +511,26 @@ object Cp3ComputationalRawEngine {
         )
     }
 
-    private fun sample(frame: FrameCalibration, x: Int, y: Int): SensorSample {
-        val raw = frame.frame.raw16LittleEndianAt(x, y)
-        val site = ((y and 1) shl 1) or (x and 1)
+    private fun sampleSignalDn(frame: FrameCalibration, raw: Int, site: Int): Double {
         val black = frame.blackLevels[site]
-        val white = frame.whiteLevel
-        val range = white - black
+        val range = frame.whiteLevel - black
         check(range > 0.0 && range.isFinite()) { "CP3 requires a positive real per-site sensor range" }
-        val signal = (raw.toDouble() - black).coerceIn(0.0, range)
-        val normalized = signal / range
+        return (raw.toDouble() - black).coerceIn(0.0, range)
+    }
+
+    private fun sampleVarianceDn2(frame: FrameCalibration, signalDn: Double, site: Int): Double {
+        val black = frame.blackLevels[site]
+        val range = frame.whiteLevel - black
+        check(range > 0.0 && range.isFinite()) { "CP3 requires a positive real per-site sensor range" }
         val noise = checkNotNull(frame.noiseProfile)[site]
+        val normalized = signalDn / range
         val normalizedVariance = noise.shotSlope * normalized + noise.readVariance
-        val varianceDn2 = normalizedVariance * range * range
-        return SensorSample(
-            signalDn = signal,
-            knownVarianceDn2 = max(varianceDn2, 0.0),
-            censored = raw.toDouble() <= black || raw.toDouble() >= white,
-        )
+        return max(normalizedVariance * range * range, 0.0)
+    }
+
+    private fun sampleCensored(frame: FrameCalibration, raw: Int, site: Int): Boolean {
+        val black = frame.blackLevels[site]
+        return raw.toDouble() <= black || raw.toDouble() >= frame.whiteLevel
     }
 
     private fun outputSha256(
@@ -524,10 +570,21 @@ object Cp3ComputationalRawEngine {
                 frame.secondBestMeanNormalizedSquaredResidual?.let { java.lang.Double.toHexString(it) } ?: "null",
             )
         }
-        // V3 hashes the actual persistent U16 fused raster plus immutable provenance. Noise and
-        // contributor evidence still controls fusion and report counters but is not duplicated into
-        // full-resolution persistent diagnostic arrays.
-        signalDn.forEach { updateInt(it.toInt() and 0xffff) }
+        // V4 hashes the actual persistent U16 raster in bounded chunks. The previous per-sample
+        // updateInt path made four MessageDigest calls for every pixel, which was another avoidable
+        // full-resolution CPU hot spot after fusion completed.
+        val rasterBytes = ByteArray(16 * 1024)
+        var rasterOffset = 0
+        signalDn.forEach { sample ->
+            val value = sample.toInt() and 0xffff
+            rasterBytes[rasterOffset++] = value.toByte()
+            rasterBytes[rasterOffset++] = (value ushr 8).toByte()
+            if (rasterOffset == rasterBytes.size) {
+                digest.update(rasterBytes)
+                rasterOffset = 0
+            }
+        }
+        if (rasterOffset > 0) digest.update(rasterBytes, 0, rasterOffset)
         return digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
@@ -571,10 +628,10 @@ object Cp3ComputationalRawEngine {
         val exposureKey: ExposureKey?,
     )
 
-    private data class SensorSample(
-        val signalDn: Double,
-        val knownVarianceDn2: Double,
-        val censored: Boolean,
+    private data class FusionFrame(
+        val calibration: FrameCalibration,
+        val dxPixels: Int,
+        val dyPixels: Int,
     )
 
     private data class AlignmentScore(
@@ -769,6 +826,26 @@ class Cp3FusedCfa internal constructor(
     internal fun signalDnAt(index: Int): Float {
         require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }
         return (signalDn[index].toInt() and 0xffff).toFloat()
+    }
+
+    internal fun writeU16LittleEndian(
+        startIndex: Int,
+        count: Int,
+        maxValue: Int,
+        destination: ByteArray,
+    ) {
+        require(startIndex >= 0 && count >= 0 && startIndex.toLong() + count.toLong() <= signalDn.size.toLong())
+        require(maxValue in 1..0xffff)
+        require(destination.size >= count * 2)
+        var sourceIndex = startIndex
+        var destinationIndex = 0
+        val end = startIndex + count
+        while (sourceIndex < end) {
+            val value = minOf(signalDn[sourceIndex].toInt() and 0xffff, maxValue)
+            destination[destinationIndex++] = value.toByte()
+            destination[destinationIndex++] = (value ushr 8).toByte()
+            sourceIndex++
+        }
     }
 }
 
