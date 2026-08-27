@@ -173,9 +173,9 @@ internal class AndroidDngWriter(
             "CP1 preflight RAW plane buffer is shorter than its declared layout"
         }
 
-        // CP2 receives the exact CameraCharacteristics already supplied by the sole camera owner.
-        // Failure to read optional calibration must never invalidate CP1 acquisition evidence.
-        runCatching { Cp2CalibrationObservationHub.observeStatic(characteristics) }
+        // CP2 receives the exact CameraCharacteristics and shutter identity supplied by the sole
+        // camera owner. Optional calibration remains nullable and never invalidates CP1 evidence.
+        runCatching { Cp2CalibrationObservationHub.observeStatic(context, characteristics) }
 
         return RawSourceLayoutCertification(
             captureToken = context.captureToken,
