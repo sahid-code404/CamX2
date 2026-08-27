@@ -13,6 +13,8 @@ import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationObservationHub
 import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationReport
 import com.sahidcode404.camx.core.camera.raw.Cp2EvidenceStore
 import com.sahidcode404.camx.core.camera.raw.Cp3EvidenceStore
+import com.sahidcode404.camx.core.camera.raw.Cp4ComputationalDngStore
+import com.sahidcode404.camx.core.camera.raw.Cp4SaveReport
 import com.sahidcode404.camx.core.camera.raw.ImmutableRawFrameSet
 import com.sahidcode404.camx.core.camera.raw.M4BurstLimits
 import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureIdentity
@@ -48,12 +50,13 @@ data class ComputationalRawProbeResult(
     val report: RawBurstCaptureReport,
     val cp2Report: Cp2CalibrationReport? = null,
     val cp3Report: Cp3FusionReport? = null,
+    val cp4Report: Cp4SaveReport? = null,
 )
 
 /**
- * CP1 acquisition plus CP2 calibration and CP3 sensor-domain fusion handoff. CameraSessionController
- * still owns every Camera2 device, session, ImageReader, capture request and Image. CP2 observes exact
- * metadata and CP3 operates only on immutable copied RAW evidence after Camera2 ownership has ended.
+ * CP1 acquisition, CP2 calibration, CP3 sensor-domain fusion and CP4 computational-DNG save.
+ * CameraSessionController still owns every Camera2 device, session, ImageReader, capture request and
+ * Image. CP2 observes exact metadata; CP3/CP4 operate only after Android Image ownership has ended.
  */
 internal class Cp1CaptureCoordinator(
     context: Context,
@@ -64,6 +67,7 @@ internal class Cp1CaptureCoordinator(
     private val evidenceStore = Cp1EvidenceStore(appContext)
     private val cp2EvidenceStore = Cp2EvidenceStore(appContext)
     private val cp3EvidenceStore = Cp3EvidenceStore(appContext)
+    private val cp4Store = Cp4ComputationalDngStore(appContext)
     private val active = AtomicBoolean(false)
 
     suspend fun capture(displayRotation: DisplayRotation): ComputationalRawProbeResult {
@@ -231,31 +235,45 @@ internal class Cp1CaptureCoordinator(
                     val cp2Persisted = cp2EvidenceStore.persist(bundle)
                     bundle.report.copy(evidencePersisted = cp2Persisted)
                 }
-                val cp3Report = cp2Bundle?.let { bundle ->
-                    val fusionReport = try {
-                        when (val fusion = withContext(Dispatchers.Default) {
+                val cp3Outcome = cp2Bundle?.let { bundle ->
+                    try {
+                        withContext(Dispatchers.Default) {
                             Cp3ComputationalRawEngine.fuse(
                                 frameSet = frameSet,
                                 calibration = bundle,
                                 maxResidentBytes = cp3ResidentBudgetBytes(frameSet),
                             )
-                        }) {
-                            is Cp3FusionOutcome.Fused -> fusion.report
-                            is Cp3FusionOutcome.Failed -> fusion.report
                         }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: Throwable) {
-                        cp3ExecutionFailure(frameSet, bundle, failure)
+                        Cp3FusionOutcome.Failed(cp3ExecutionFailure(frameSet, bundle, failure))
+                    }
+                }
+                val cp3Report = cp3Outcome?.let { fusion ->
+                    val fusionReport = when (fusion) {
+                        is Cp3FusionOutcome.Fused -> fusion.report
+                        is Cp3FusionOutcome.Failed -> fusion.report
                     }
                     val cp3Persisted = cp3EvidenceStore.persist(fusionReport)
                     fusionReport.withEvidencePersisted(cp3Persisted)
+                }
+                val cp4Report = if (cp2Bundle != null && cp3Outcome is Cp3FusionOutcome.Fused) {
+                    cp4Store.save(
+                        captureContext = frameSet.context,
+                        fused = cp3Outcome.fused,
+                        fusionReport = cp3Report ?: cp3Outcome.report,
+                        calibration = cp2Bundle,
+                    )
+                } else {
+                    null
                 }
                 ComputationalRawProbeResult(
                     outcome = capturedOutcome,
                     report = report.withEvidencePersisted(persisted),
                     cp2Report = cp2Report,
                     cp3Report = cp3Report,
+                    cp4Report = cp4Report,
                 )
             }
             is RawBurstCaptureOutcome.Failed,
