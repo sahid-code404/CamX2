@@ -1,0 +1,100 @@
+name: One-shot CP3 U16 footprint fix 2
+
+on:
+  push:
+    branches:
+      - phase/camx2-computational-photo-integration
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Retry real CP3 U16 memory footprint fix'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: phase/camx2-computational-photo-integration
+          fetch-depth: 0
+
+      - name: Replace float CP3 raster with owned U16 raster
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          cp3_path = Path('app/src/main/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngine.kt')
+          cp3 = cp3_path.read_text()
+          cp3 = replace_once(cp3, 'import kotlin.math.max\n', 'import kotlin.math.max\nimport kotlin.math.roundToInt\n', 'cp3 round import')
+          cp3 = replace_once(cp3, '    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v2-low-memory"\n    const val ALGORITHM_VERSION = 2\n', '    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v3-u16"\n    const val ALGORITHM_VERSION = 3\n', 'cp3 algorithm version')
+          cp3 = replace_once(cp3, '''    // Production CP3 retains only the fused signal raster. Per-pixel variance and contributor\n    // counts are fusion temporaries represented by aggregate report counters, not full-resolution\n    // persistent arrays. This cuts CP3 output residency from 9 B/px to 4 B/px.\n    private const val OUTPUT_BYTES_PER_PIXEL = 4L\n''', '''    // Production CP3 retains only one unsigned 16-bit black-subtracted CFA signal raster.\n    // RAW input is 16-bit sensor DN, so Float32 storage doubled the persistent output footprint\n    // without adding sensor-domain precision. U16 keeps the fused negative bounded at 2 B/px.\n    private const val OUTPUT_BYTES_PER_PIXEL = 2L\n''', 'cp3 output footprint constant')
+          cp3 = replace_once(cp3, '            return failed("CP3 resident-memory admission failed", evidence)\n', '''            return failed(\n                "CP3 resident-memory admission failed: required=${requiredResident / (1024L * 1024L)}MiB " +\n                    "budget=${maxResidentBytes / (1024L * 1024L)}MiB " +\n                    "frames=${frameSet.totalCanonicalBytes / (1024L * 1024L)}MiB " +\n                    "output=${outputBytes / (1024L * 1024L)}MiB",\n                evidence,\n            )\n''', 'cp3 memory diagnostic')
+          cp3 = replace_once(cp3, '        val signalDn = FloatArray(activePixels.toInt())\n', '        val signalDn = ShortArray(activePixels.toInt())\n', 'cp3 signal allocation')
+          cp3 = replace_once(cp3, '                    signalDn[outputIndex] = finiteFloat(referenceSample.signalDn, "CP3 reference signal")\n', '                    signalDn[outputIndex] = finiteU16(referenceSample.signalDn, "CP3 reference signal")\n', 'cp3 reference store')
+          cp3 = replace_once(cp3, '                signalDn[outputIndex] = finiteFloat(fused, "CP3 fused signal")\n', '                signalDn[outputIndex] = finiteU16(fused, "CP3 fused signal")\n', 'cp3 fused store')
+          cp3 = replace_once(cp3, '        signalDn: FloatArray,\n', '        signalDn: ShortArray,\n', 'cp3 hash signal type')
+          cp3 = replace_once(cp3, '''        // V2 hashes the actual persistent fused raster plus immutable provenance. Noise and\n        // contributor evidence still controls fusion and report counters but is not duplicated into\n        // full-resolution persistent diagnostic arrays.\n        signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }\n''', '''        // V3 hashes the actual persistent U16 fused raster plus immutable provenance. Noise and\n        // contributor evidence still controls fusion and report counters but is not duplicated into\n        // full-resolution persistent diagnostic arrays.\n        signalDn.forEach { updateInt(it.toInt() and 0xffff) }\n''', 'cp3 output hash')
+          cp3 = replace_once(cp3, '''    private fun finiteFloat(value: Double, label: String): Float {\n        require(value.isFinite() && value >= 0.0) { "$label must be finite and non-negative" }\n        val result = value.toFloat()\n        require(result.isFinite()) { "$label exceeds deterministic Float storage" }\n        return result\n    }\n''', '''    private fun finiteU16(value: Double, label: String): Short {\n        require(value.isFinite() && value >= 0.0) { "$label must be finite and non-negative" }\n        return value.coerceAtMost(0xffff.toDouble()).roundToInt().toShort()\n    }\n''', 'cp3 u16 conversion')
+          cp3 = replace_once(cp3, '''class Cp3FusedCfa internal constructor(\n    val activeArea: IntRect,\n    val cfaPattern: CfaPattern,\n    signalDn: FloatArray,\n    val outputSha256: String,\n) {\n    // CP3 owns the fused signal array exclusively and never mutates it after construction. Variance\n    // and contributor maps are deliberately not retained at full resolution in the production path.\n    private val signalDn = signalDn\n\n    val pixelCount: Int get() = signalDn.size\n\n    init {\n        val expected = activeArea.width.toLong() * activeArea.height.toLong()\n        require(expected <= Int.MAX_VALUE.toLong())\n        require(this.signalDn.size == expected.toInt())\n        require(outputSha256.length == 64)\n    }\n\n    fun copySignalDn(): FloatArray = signalDn.copyOf()\n\n    internal fun signalDnAt(index: Int): Float {\n        require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }\n        return signalDn[index]\n    }\n}\n''', '''class Cp3FusedCfa internal constructor(\n    val activeArea: IntRect,\n    val cfaPattern: CfaPattern,\n    signalDn: ShortArray,\n    val outputSha256: String,\n) {\n    // Ownership is transferred from the engine. The backing U16 raster is private and is never\n    // mutated after construction, so immutability does not require a second full-resolution copy.\n    private val signalDn = signalDn\n\n    internal constructor(\n        activeArea: IntRect,\n        cfaPattern: CfaPattern,\n        signalDn: FloatArray,\n        outputSha256: String,\n    ) : this(\n        activeArea = activeArea,\n        cfaPattern = cfaPattern,\n        signalDn = ShortArray(signalDn.size) { index ->\n            val value = signalDn[index]\n            require(value.isFinite() && value >= 0f)\n            value.coerceAtMost(0xffff.toFloat()).roundToInt().toShort()\n        },\n        outputSha256 = outputSha256,\n    )\n\n    val pixelCount: Int get() = signalDn.size\n\n    init {\n        val expected = activeArea.width.toLong() * activeArea.height.toLong()\n        require(expected <= Int.MAX_VALUE.toLong())\n        require(this.signalDn.size == expected.toInt())\n        require(outputSha256.length == 64)\n    }\n\n    fun copySignalDn(): FloatArray = FloatArray(signalDn.size) { index -> signalDnAt(index) }\n\n    internal fun signalDnAt(index: Int): Float {\n        require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }\n        return (signalDn[index].toInt() and 0xffff).toFloat()\n    }\n}\n''', 'cp3 fused model')
+          cp3_path.write_text(cp3)
+
+          cp4_path = Path('app/src/main/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriter.kt')
+          cp4 = cp4_path.read_text()
+          cp4 = replace_once(cp4, '        require(outputWhite in 1..0xffff_ffffL) { "CP4 output white level is not representable in DNG" }\n', '        require(outputWhite in 1..0xffffL) { "CP4 U16 output white level is not representable in DNG" }\n', 'cp4 white range')
+          cp4 = replace_once(cp4, '        val imageBytes = checkedMultiply(pixels, FLOAT_BYTES, "CP4 float raster byte count overflow")\n', '        val imageBytes = checkedMultiply(pixels, UINT16_BYTES, "CP4 U16 raster byte count overflow")\n', 'cp4 image bytes')
+          cp4 = replace_once(cp4, '                FLOAT_BYTES,\n                "CP4 strip byte count overflow",\n', '                UINT16_BYTES,\n                "CP4 strip byte count overflow",\n', 'cp4 strip bytes')
+          cp4 = replace_once(cp4, '        entries += shortEntry(TAG_BITS_PER_SAMPLE, 32)\n', '        entries += shortEntry(TAG_BITS_PER_SAMPLE, 16)\n', 'cp4 bits per sample')
+          cp4 = replace_once(cp4, '        entries += shortEntry(TAG_SAMPLE_FORMAT, SAMPLE_FORMAT_IEEE_FLOAT)\n', '        entries += shortEntry(TAG_SAMPLE_FORMAT, SAMPLE_FORMAT_UNSIGNED_INT)\n', 'cp4 sample format')
+          cp4 = replace_once(cp4, '''        // Stream CP3's immutable signal directly. A second full-resolution FloatArray would make\n        // CP4 itself the next memory spike immediately after low-memory CP3 succeeds.\n''', '''        // Stream CP3's immutable U16 signal directly. CP4 never materializes another full raster.\n''', 'cp4 stream comment')
+          cp4 = replace_once(cp4, '''        for (index in 0 until fused.pixelCount) {\n            val sample = fused.signalDnAt(index)\n            require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }\n            writeFloat32(counted, minOf(sample.toDouble(), outputWhite.toDouble()).toFloat())\n        }\n''', '''        for (index in 0 until fused.pixelCount) {\n            val sample = fused.signalDnAt(index)\n            require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }\n            writeUInt16(counted, minOf(sample.toInt(), outputWhite.toInt()))\n        }\n''', 'cp4 raster streaming')
+          cp4 = replace_once(cp4, '        append("camx2-cp4-computational-dng-v1\\n")\n        append("encoding=float32-black-subtracted-linear-cfa\\n")\n', '        append("camx2-cp4-computational-dng-v2\\n")\n        append("encoding=uint16-black-subtracted-linear-cfa\\n")\n', 'cp4 manifest encoding')
+          cp4 = replace_once(cp4, '''    private fun writeFloat32(output: OutputStream, value: Float) {\n        val bits = java.lang.Float.floatToIntBits(value)\n        output.write(bits)\n        output.write(bits ushr 8)\n        output.write(bits ushr 16)\n        output.write(bits ushr 24)\n    }\n''', '''    private fun writeUInt16(output: OutputStream, value: Int) {\n        require(value in 0..0xffff)\n        output.write(value)\n        output.write(value ushr 8)\n    }\n''', 'cp4 u16 writer')
+          cp4 = replace_once(cp4, '        const val FLOAT_BYTES = 4L\n', '        const val UINT16_BYTES = 2L\n', 'cp4 byte constant')
+          cp4 = replace_once(cp4, '        const val SAMPLE_FORMAT_IEEE_FLOAT = 3\n', '        const val SAMPLE_FORMAT_UNSIGNED_INT = 1\n', 'cp4 sample constant')
+          cp4_path.write_text(cp4)
+
+          coordinator_path = Path('app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt')
+          coordinator = coordinator_path.read_text()
+          coordinator = replace_once(coordinator, '''    private fun cp3ResidentBudgetBytes(): Long {\n        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP3_MANAGED_HEAP_RESERVE_BYTES)\n            .coerceAtLeast(1L)\n        return minOf(CP3_MAX_RESIDENT_BYTES, managedHeapCeiling)\n    }\n''', '''    private fun cp3ResidentBudgetBytes(): Long {\n        // CP3's own proof already includes every retained RAW byte, the complete fused U16 raster,\n        // and its explicit safety margin. Keep only a small VM reserve here; the previous 48 MiB\n        // second reserve rejected otherwise-admissible 8-frame bursts on constrained Android heaps.\n        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP3_MANAGED_HEAP_RESERVE_BYTES)\n            .coerceAtLeast(1L)\n        return minOf(CP3_MAX_RESIDENT_BYTES, managedHeapCeiling)\n    }\n''', 'coordinator budget comment')
+          coordinator = replace_once(coordinator, '        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L\n', '        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 8L * 1024L * 1024L\n', 'coordinator CP3 reserve')
+          coordinator_path.write_text(coordinator)
+
+          cp3_test_path = Path('app/src/test/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngineTest.kt')
+          cp3_test = cp3_test_path.read_text()
+          cp3_test = replace_once(cp3_test, '    fun signalOnlyResidentBudgetAdmitsFourBytesPerPixel() {\n', '    fun u16SignalResidentBudgetAdmitsTwoBytesPerPixel() {\n', 'cp3 test name')
+          cp3_test = replace_once(cp3_test, '        val exactV2Budget = frameSet.totalCanonicalBytes + pixels * 4L + 1024L * 1024L\n\n        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV2Budget)\n', '        val exactV3Budget = frameSet.totalCanonicalBytes + pixels * 2L + 1024L * 1024L\n\n        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV3Budget)\n', 'cp3 test budget')
+          cp3_test_path.write_text(cp3_test)
+
+          cp4_test_path = Path('app/src/test/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriterTest.kt')
+          cp4_test = cp4_test_path.read_text()
+          cp4_test = replace_once(cp4_test, '        assertEquals(42, uint16(first.toByteArray(), 2))\n', '''        assertEquals(42, uint16(first.toByteArray(), 2))\n        assertEquals(16, uint16(tagPayload(first.toByteArray(), 258), 0))\n        assertEquals(1, uint16(tagPayload(first.toByteArray(), 339), 0))\n''', 'cp4 U16 tag assertions')
+          cp4_test_path.write_text(cp4_test)
+          PY
+
+          git rm .github/workflows/one-shot-cp3-u16-footprint-fix-2.yml
+          git diff --check
+          git diff --stat
+
+      - name: Run targeted CP3 and CP4 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :app:testDebugUnitTest --tests '*Cp3ComputationalRawEngineTest' --tests '*Cp4ComputationalDngWriterTest'
+
+      - name: Commit production memory fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Store CP3 fused RAW as U16'
+          git push origin HEAD:phase/camx2-computational-photo-integration
