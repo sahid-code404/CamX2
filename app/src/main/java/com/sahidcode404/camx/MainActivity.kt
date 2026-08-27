@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
                 var requestCompleted by remember { mutableStateOf(cameraPermissionGranted) }
                 var storagePermissionGranted by remember { mutableStateOf(hasLegacyStoragePermission()) }
                 var pendingLegacyCapture by remember { mutableStateOf(false) }
+                var pendingLegacyComputationalRaw by remember { mutableStateOf(false) }
                 var captureRequestNonce by remember { mutableStateOf(0) }
                 var cp1RequestNonce by remember { mutableStateOf(0) }
                 var captureBusy by remember { mutableStateOf(false) }
@@ -88,11 +89,13 @@ class MainActivity : ComponentActivity() {
                 ) { granted ->
                     storagePermissionGranted = granted
                     val shouldCapture = pendingLegacyCapture && granted
+                    val shouldComputationalRaw = pendingLegacyComputationalRaw && granted
                     pendingLegacyCapture = false
-                    if (shouldCapture) {
-                        captureRequestNonce += 1
-                    } else if (!granted) {
-                        captureMessage = storagePermissionText
+                    pendingLegacyComputationalRaw = false
+                    when {
+                        shouldCapture -> captureRequestNonce += 1
+                        shouldComputationalRaw -> cp1RequestNonce += 1
+                        !granted -> captureMessage = storagePermissionText
                     }
                 }
 
@@ -137,7 +140,26 @@ class MainActivity : ComponentActivity() {
                             result.cp2Report?.let { cp2 ->
                                 result.cp3Report?.let { cp3 ->
                                     if (cp3.success) {
-                                        getString(
+                                        result.cp4Report?.let { cp4 ->
+                                            if (cp4.success) {
+                                                getString(
+                                                    R.string.cp1_cp2_cp3_cp4_success,
+                                                    report.exactPairsCreated,
+                                                    report.requestedFrames,
+                                                    cp2.exactDynamicBindings,
+                                                    cp3.contributingFrames,
+                                                )
+                                            } else {
+                                                getString(
+                                                    R.string.cp1_cp2_cp3_cp4_failed,
+                                                    report.exactPairsCreated,
+                                                    report.requestedFrames,
+                                                    cp2.exactDynamicBindings,
+                                                    cp3.contributingFrames,
+                                                    cp4.failureDetail ?: "unknown",
+                                                )
+                                            }
+                                        } ?: getString(
                                             R.string.cp1_cp2_cp3_success,
                                             report.exactPairsCreated,
                                             report.requestedFrames,
@@ -213,7 +235,14 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onCaptureCp1 = {
-                            if (!captureBusy && photoCaptureAvailable) cp1RequestNonce += 1
+                            if (!captureBusy && photoCaptureAvailable) {
+                                if (requiresLegacyStoragePermission() && !storagePermissionGranted) {
+                                    pendingLegacyComputationalRaw = true
+                                    storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                } else {
+                                    cp1RequestNonce += 1
+                                }
+                            }
                         },
                         onToggleVideoRecording = {},
                         onLensSelected = visiblePreviewGraph.coordinator::selectLens,
