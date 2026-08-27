@@ -70,11 +70,25 @@ jobs:
           finalize=true
           if gh release view dev-latest >/dev/null 2>&1; then
             mapfile -t assets < <(gh release view dev-latest --json assets --jq '.assets[].name')
-            if printf '%s\n' "${assets[@]}" | grep -Fxq dev-manifest.json; then
-              printf '%s\n' "${assets[@]}" | grep -Fxq CamX-dev.apk || {
-                echo 'Existing rolling release is incomplete; refusing a downgrade repair.' >&2
+            has_manifest=false
+            has_apk=false
+            printf '%s\n' "${assets[@]}" | grep -Fxq dev-manifest.json && has_manifest=true
+            printf '%s\n' "${assets[@]}" | grep -Fxq CamX-dev.apk && has_apk=true
+
+            if [[ "$has_manifest" == true && "$has_apk" == false ]]; then
+              mkdir -p current-dev-ota
+              gh release download dev-latest \
+                --pattern dev-manifest.json \
+                --dir current-dev-ota
+              cmp -s current-dev-ota/dev-manifest.json artifacts-dev-ota/dev-manifest.json || {
+                echo 'Existing rolling release is incomplete and is not the exact candidate; refusing repair.' >&2
                 exit 1
               }
+              echo 'Repairing an interrupted publication of this exact verified candidate.'
+            elif [[ "$has_manifest" == false && "$has_apk" == true ]]; then
+              echo 'Existing rolling release has an unverifiable APK without its manifest; refusing repair.' >&2
+              exit 1
+            elif [[ "$has_manifest" == true && "$has_apk" == true ]]; then
               mkdir -p current-dev-ota
               gh release download dev-latest \
                 --pattern dev-manifest.json \
@@ -133,10 +147,19 @@ jobs:
         if: ${{ steps.freshness.outputs.publish == 'true' }}
         run: |
           set -euo pipefail
-          gh release upload dev-latest \
-            artifacts-dev-ota/CamX-dev.apk \
-            artifacts-dev-ota/dev-manifest.json \
-            --clobber
+          uploaded=false
+          for attempt in 1 2 3; do
+            if gh release upload dev-latest \
+              artifacts-dev-ota/CamX-dev.apk \
+              artifacts-dev-ota/dev-manifest.json \
+              --clobber; then
+              uploaded=true
+              break
+            fi
+            echo "Rolling asset upload attempt ${attempt} failed; retrying." >&2
+            sleep $((attempt * 3))
+          done
+          test "$uploaded" = true
 
       - name: Move rolling tag after complete asset upload
         if: ${{ steps.freshness.outputs.finalize == 'true' }}
