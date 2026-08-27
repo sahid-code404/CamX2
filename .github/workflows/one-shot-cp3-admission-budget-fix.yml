@@ -1,0 +1,67 @@
+name: One-shot CP3 admission budget fix
+
+on:
+  push:
+    branches:
+      - phase/camx2-computational-photo-integration
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Patch CP3 admission budget on Android'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: phase/camx2-computational-photo-integration
+          fetch-depth: 0
+
+      - name: Fix post-burst CP3 heap admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt')
+          text = path.read_text()
+
+          old_call = '''                                maxResidentBytes = cp3ResidentBudgetBytes(frameSet),\n'''
+          new_call = '''                                maxResidentBytes = cp3ResidentBudgetBytes(),\n'''
+          if text.count(old_call) != 1:
+              raise SystemExit(f'expected one CP3 budget call, found {text.count(old_call)}')
+          text = text.replace(old_call, new_call, 1)
+
+          old_budget = '''    /** CP3 input frames are already heap-owned, so only proven remaining heap headroom is added. */\n    private fun cp3ResidentBudgetBytes(frameSet: ImmutableRawFrameSet): Long {\n        val runtime = Runtime.getRuntime()\n        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)\n        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)\n        val composite = runCatching {\n            Math.addExact(frameSet.totalCanonicalBytes, managedHeapHeadroom)\n        }.getOrElse { Long.MAX_VALUE }\n        return minOf(CP3_MAX_RESIDENT_BYTES, composite)\n    }\n'''
+          new_budget = '''    /**\n     * CP3 runs immediately after an eight-frame burst. Runtime.freeMemory() only reports currently\n     * committed free heap and does not include reclaimable dead burst/preflight allocations, so using\n     * it as an admission authority can falsely reject fusion before the FloatArray is even attempted.\n     * The immutable FrameSet is already resident; admit against the VM heap capacity with an explicit\n     * application reserve. ART remains free to collect dead transient allocations under pressure.\n     */\n    private fun cp3ResidentBudgetBytes(): Long {\n        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP3_MANAGED_HEAP_RESERVE_BYTES)\n            .coerceAtLeast(1L)\n        return minOf(CP3_MAX_RESIDENT_BYTES, managedHeapCeiling)\n    }\n'''
+          if text.count(old_budget) != 1:
+              raise SystemExit(f'expected one CP3 budget function, found {text.count(old_budget)}')
+          text = text.replace(old_budget, new_budget, 1)
+
+          old_constants = '''        const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L\n        const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L\n'''
+          new_constants = '''        const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L\n        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L\n        const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L\n'''
+          if text.count(old_constants) != 1:
+              raise SystemExit(f'expected one CP3 constant block, found {text.count(old_constants)}')
+          text = text.replace(old_constants, new_constants, 1)
+
+          path.write_text(text)
+          PY
+
+          git rm .github/workflows/one-shot-cp3-admission-budget-fix.yml
+          git diff --check
+          git diff --exit-code -- app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt && {
+            echo 'CP3 admission patch produced no source change' >&2
+            exit 1
+          }
+
+      - name: Commit recovery fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt .github/workflows/one-shot-cp3-admission-budget-fix.yml
+          git commit -m 'Fix CP3 post-burst heap admission'
+          git push origin HEAD:phase/camx2-computational-photo-integration
