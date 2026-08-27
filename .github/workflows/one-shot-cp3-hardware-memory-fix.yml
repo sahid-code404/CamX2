@@ -1,0 +1,122 @@
+name: One-shot CP3 hardware memory fix
+
+on:
+  push:
+    branches:
+      - phase/camx2-computational-photo-integration
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Apply CP3 hardware memory recovery patch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: phase/camx2-computational-photo-integration
+          fetch-depth: 0
+
+      - name: Apply bounded low-memory CP3 and retry recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          cp3 = 'app/src/main/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngine.kt'
+          replace_once(cp3,
+              '    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v1"\n    const val ALGORITHM_VERSION = 1\n',
+              '    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v2-low-memory"\n    const val ALGORITHM_VERSION = 2\n')
+          replace_once(cp3,
+              '    private const val OUTPUT_BYTES_PER_PIXEL = 9L\n',
+              '    // Production CP3 retains only the fused signal raster. Per-pixel variance and contributor\n    // counts are fusion temporaries represented by aggregate report counters, not full-resolution\n    // persistent arrays. This cuts CP3 output residency from 9 B/px to 4 B/px.\n    private const val OUTPUT_BYTES_PER_PIXEL = 4L\n')
+          replace_once(cp3,
+              '        val signalDn = FloatArray(activePixels.toInt())\n        val knownVarianceDn2 = FloatArray(activePixels.toInt())\n        val contributors = ByteArray(activePixels.toInt())\n',
+              '        val signalDn = FloatArray(activePixels.toInt())\n')
+          replace_once(cp3,
+              '                    signalDn[outputIndex] = finiteFloat(referenceSample.signalDn, "CP3 reference signal")\n                    knownVarianceDn2[outputIndex] = finiteFloat(\n                        max(referenceSample.knownVarianceDn2, MIN_VARIANCE_DN2),\n                        "CP3 reference known variance",\n                    )\n                    contributors[outputIndex] = 1\n',
+              '                    signalDn[outputIndex] = finiteFloat(referenceSample.signalDn, "CP3 reference signal")\n')
+          replace_once(cp3,
+              '                val fused = sumWeightedSignal / sumWeight\n                val variance = 1.0 / sumWeight\n                signalDn[outputIndex] = finiteFloat(fused, "CP3 fused signal")\n                knownVarianceDn2[outputIndex] = finiteFloat(variance, "CP3 fused known variance")\n                contributors[outputIndex] = contributorCount.toByte()\n',
+              '                val fused = sumWeightedSignal / sumWeight\n                signalDn[outputIndex] = finiteFloat(fused, "CP3 fused signal")\n')
+          replace_once(cp3,
+              '            evidence = evidence,\n            signalDn = signalDn,\n            knownVarianceDn2 = knownVarianceDn2,\n            contributors = contributors,\n',
+              '            evidence = evidence,\n            signalDn = signalDn,\n')
+          replace_once(cp3,
+              '                cfaPattern = cfa,\n                signalDn = signalDn,\n                knownVarianceDn2 = knownVarianceDn2,\n                contributors = contributors,\n                outputSha256 = outputSha,\n',
+              '                cfaPattern = cfa,\n                signalDn = signalDn,\n                outputSha256 = outputSha,\n')
+          replace_once(cp3,
+              '        evidence: List<Cp3FrameEvidence>,\n        signalDn: FloatArray,\n        knownVarianceDn2: FloatArray,\n        contributors: ByteArray,\n    ): String {',
+              '        evidence: List<Cp3FrameEvidence>,\n        signalDn: FloatArray,\n    ): String {')
+          replace_once(cp3,
+              '        signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }\n        knownVarianceDn2.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }\n        digest.update(contributors)\n',
+              '        // V2 hashes the actual persistent fused raster plus immutable provenance. Noise and\n        // contributor evidence still controls fusion and report counters but is not duplicated into\n        // full-resolution persistent diagnostic arrays.\n        signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }\n')
+          replace_once(cp3,
+              '''class Cp3FusedCfa internal constructor(\n    val activeArea: IntRect,\n    val cfaPattern: CfaPattern,\n    signalDn: FloatArray,\n    knownVarianceDn2: FloatArray,\n    contributors: ByteArray,\n    val outputSha256: String,\n) {\n    // The engine creates these arrays exclusively for this object and never mutates them after\n    // construction. Keeping ownership instead of copying avoids doubling a full-resolution CP3 output.\n    private val signalDn = signalDn\n    private val knownVarianceDn2 = knownVarianceDn2\n    private val contributors = contributors\n\n    init {\n        val expected = activeArea.width.toLong() * activeArea.height.toLong()\n        require(expected <= Int.MAX_VALUE.toLong())\n        require(this.signalDn.size == expected.toInt())\n        require(this.knownVarianceDn2.size == expected.toInt())\n        require(this.contributors.size == expected.toInt())\n        require(outputSha256.length == 64)\n    }\n\n    fun copySignalDn(): FloatArray = signalDn.copyOf()\n    fun copyKnownVarianceDn2(): FloatArray = knownVarianceDn2.copyOf()\n    fun copyContributorCounts(): ByteArray = contributors.copyOf()\n}\n''',
+              '''class Cp3FusedCfa internal constructor(\n    val activeArea: IntRect,\n    val cfaPattern: CfaPattern,\n    signalDn: FloatArray,\n    val outputSha256: String,\n) {\n    // CP3 owns the fused signal array exclusively and never mutates it after construction. Variance\n    // and contributor maps are deliberately not retained at full resolution in the production path.\n    private val signalDn = signalDn\n\n    val pixelCount: Int get() = signalDn.size\n\n    init {\n        val expected = activeArea.width.toLong() * activeArea.height.toLong()\n        require(expected <= Int.MAX_VALUE.toLong())\n        require(this.signalDn.size == expected.toInt())\n        require(outputSha256.length == 64)\n    }\n\n    fun copySignalDn(): FloatArray = signalDn.copyOf()\n\n    internal fun signalDnAt(index: Int): Float {\n        require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }\n        return signalDn[index]\n    }\n}\n''')
+
+          cp4 = 'app/src/main/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriter.kt'
+          replace_once(cp4,
+              '''        // Current Cp3FusedCfa intentionally exposes immutable copies only. CP4 accounts for this\n        // temporary copy explicitly and never obtains mutable ownership of CP3's internal raster.\n        val signal = fused.copySignalDn()\n        require(signal.size.toLong() == pixels)\n        val digest = MessageDigest.getInstance("SHA-256")\n        val counted = CountingOutputStream(DigestOutputStream(output, digest), maxOutputBytes)\n        counted.write(metadata)\n        writePadding(counted, privateOffset - counted.byteCount)\n        counted.write(manifest)\n        writePadding(counted, imageOffset - counted.byteCount)\n        signal.forEach { sample ->\n            require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }\n            writeFloat32(counted, minOf(sample.toDouble(), outputWhite.toDouble()).toFloat())\n        }\n''',
+              '''        // Stream CP3's immutable signal directly. A second full-resolution FloatArray would make\n        // CP4 itself the next memory spike immediately after low-memory CP3 succeeds.\n        require(fused.pixelCount.toLong() == pixels)\n        val digest = MessageDigest.getInstance("SHA-256")\n        val counted = CountingOutputStream(DigestOutputStream(output, digest), maxOutputBytes)\n        counted.write(metadata)\n        writePadding(counted, privateOffset - counted.byteCount)\n        counted.write(manifest)\n        writePadding(counted, imageOffset - counted.byteCount)\n        for (index in 0 until fused.pixelCount) {\n            val sample = fused.signalDnAt(index)\n            require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }\n            writeFloat32(counted, minOf(sample.toDouble(), outputWhite.toDouble()).toFloat())\n        }\n''')
+
+          coordinator = 'app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt'
+          replace_once(coordinator,
+              '''data class ComputationalRawProbeResult(\n    val outcome: RawBurstCaptureOutcome,\n    val report: RawBurstCaptureReport,\n    val cp2Report: Cp2CalibrationReport? = null,\n    val cp3Report: Cp3FusionReport? = null,\n    val cp4Report: Cp4SaveReport? = null,\n)\n''',
+              '''enum class ComputationalRawAcquisitionStatus {\n    CAPTURED,\n    FAILED,\n    CANCELLED,\n}\n\ndata class ComputationalRawProbeResult(\n    val acquisitionStatus: ComputationalRawAcquisitionStatus,\n    val report: RawBurstCaptureReport,\n    val cp2Report: Cp2CalibrationReport? = null,\n    val cp3Report: Cp3FusionReport? = null,\n    val cp4Report: Cp4SaveReport? = null,\n)\n''')
+          replace_once(coordinator,
+              '''        var report = buildReport(\n            outcome = capturedOutcome,\n            diagnostics = checkNotNull(diagnostics),\n            preflight = preflight,\n            observedIdentity = observedIdentity,\n            displayRotation = displayRotation,\n        )\n\n        if (capturedOutcome is RawBurstCaptureOutcome.Captured && !report.success) {\n''',
+              '''        var report = buildReport(\n            outcome = capturedOutcome,\n            diagnostics = checkNotNull(diagnostics),\n            preflight = preflight,\n            observedIdentity = observedIdentity,\n            displayRotation = displayRotation,\n        )\n\n        // captureRawBurst starts preview restoration before it returns, but a new shutter transaction\n        // must not be admitted until the restored stream has produced a verified frame. This closes\n        // the real-device retry race that could turn a successful 8/8 burst into a following 0/8.\n        val restoredAfterBurst = try {\n            withTimeout(M4BurstLimits.DEFAULT_TIMEOUT_MILLIS) {\n                controller.state.filterIsInstance<CameraEngineState.Previewing>()\n                    .first { it.firstFrameVerified }\n            }\n        } catch (_: TimeoutCancellationException) {\n            cp2Observation?.close()\n            val detail = "CP1 preview restoration timed out after RAW burst"\n            report = report.copy(timedOut = true, failureDetail = detail)\n            return@coroutineScope failedResult(\n                RawBurstCaptureOutcome.Failed(RawCaptureRejected(detail)),\n                report,\n            )\n        }\n        if (!preflight.matches(restoredAfterBurst.selection)) {\n            cp2Observation?.close()\n            val detail = "CP1 selection changed while restoring preview after RAW burst"\n            report = report.copy(cancelled = true, failureDetail = detail)\n            return@coroutineScope failedResult(RawBurstCaptureOutcome.Cancelled, report)\n        }\n\n        if (capturedOutcome is RawBurstCaptureOutcome.Captured && !report.success) {\n''')
+          replace_once(coordinator,
+              '''                ComputationalRawProbeResult(\n                    outcome = capturedOutcome,\n                    report = report.withEvidencePersisted(persisted),\n                    cp2Report = cp2Report,\n                    cp3Report = cp3Report,\n                    cp4Report = cp4Report,\n                )\n''',
+              '''                ComputationalRawProbeResult(\n                    acquisitionStatus = ComputationalRawAcquisitionStatus.CAPTURED,\n                    report = report.withEvidencePersisted(persisted),\n                    cp2Report = cp2Report,\n                    cp3Report = cp3Report,\n                    cp4Report = cp4Report,\n                )\n''')
+          replace_once(coordinator,
+              '''        val persisted = evidenceStore.persistFailure(report)\n        return ComputationalRawProbeResult(outcome, report.withEvidencePersisted(persisted))\n''',
+              '''        val persisted = evidenceStore.persistFailure(report)\n        val status = when (outcome) {\n            is RawBurstCaptureOutcome.Captured -> ComputationalRawAcquisitionStatus.CAPTURED\n            is RawBurstCaptureOutcome.Failed -> ComputationalRawAcquisitionStatus.FAILED\n            RawBurstCaptureOutcome.Cancelled -> ComputationalRawAcquisitionStatus.CANCELLED\n        }\n        return ComputationalRawProbeResult(status, report.withEvidencePersisted(persisted))\n''')
+          replace_once(coordinator,
+              '''    /**\n     * ImageReader's RAW buffers are camera/native allocations, while the canonical frame copies live\n     * in the managed heap. The original CP1 probe compared the combined reservation only against\n     * managed-heap headroom, which could reject an otherwise admissible burst before request submit\n     * and report 0/8. Build a conservative composite ceiling: certified camera-buffer extent plus\n     * currently available managed-heap headroom, still capped by the frozen one-GiB M4 bound.\n     */\n    private fun cp1ResidentBudgetBytes(preflight: RawSourceLayoutCertification): Long {\n        val runtime = Runtime.getRuntime()\n        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)\n        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)\n        val cameraBufferReservation = runCatching {\n            Math.multiplyExact(CP1_REQUESTED_FRAMES.toLong(), preflight.sourceRequiredBytes)\n        }.getOrElse { return M4BurstLimits.MAX_RESIDENT_BYTES }\n        val composite = runCatching {\n            Math.addExact(cameraBufferReservation, managedHeapHeadroom)\n        }.getOrElse { Long.MAX_VALUE }\n        return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)\n    }\n''',
+              '''    /**\n     * ImageReader RAW buffers are camera/native allocations while canonical copies live in the managed\n     * heap. Runtime.freeMemory() is not an admission authority for a retry because ART may retain dead\n     * arrays until allocation pressure triggers GC. Use the bounded heap capacity minus an explicit app\n     * reserve; actual canonical allocations still remain inside the VM heap limit.\n     */\n    private fun cp1ResidentBudgetBytes(preflight: RawSourceLayoutCertification): Long {\n        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP1_MANAGED_HEAP_RESERVE_BYTES)\n            .coerceAtLeast(1L)\n        val cameraBufferReservation = runCatching {\n            Math.multiplyExact(CP1_REQUESTED_FRAMES.toLong(), preflight.sourceRequiredBytes)\n        }.getOrElse { return M4BurstLimits.MAX_RESIDENT_BYTES }\n        val composite = runCatching {\n            Math.addExact(cameraBufferReservation, managedHeapCeiling)\n        }.getOrElse { Long.MAX_VALUE }\n        return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)\n    }\n''')
+          replace_once(coordinator,
+              '''    private companion object {\n        const val CP1_REQUESTED_FRAMES = 8\n        const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L\n    }\n''',
+              '''    private companion object {\n        const val CP1_REQUESTED_FRAMES = 8\n        const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L\n        const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L\n    }\n''')
+
+          cp3_test = 'app/src/test/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngineTest.kt'
+          replace_once(cp3_test,
+              '        assertTrue(fused.fused.copyContributorCounts().any { (it.toInt() and 0xff) >= 2 })\n',
+              '        assertEquals(SIZE * SIZE, fused.fused.pixelCount)\n')
+          replace_once(cp3_test,
+              '''    @Test\n    fun missingCamera2NoiseNeverBecomesInventedFusionNoise() {\n''',
+              '''    @Test\n    fun signalOnlyResidentBudgetAdmitsFourBytesPerPixel() {\n        val frameSet = frameSet(candidateDx = 2)\n        val calibration = calibration(frameSet)\n        val pixels = SIZE.toLong() * SIZE.toLong()\n        val exactV2Budget = frameSet.totalCanonicalBytes + pixels * 4L + 1024L * 1024L\n\n        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV2Budget)\n\n        assertTrue(outcome is Cp3FusionOutcome.Fused)\n    }\n\n    @Test\n    fun missingCamera2NoiseNeverBecomesInventedFusionNoise() {\n''')
+
+          cp4_test = 'app/src/test/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriterTest.kt'
+          replace_once(cp4_test,
+              '''            signalDn = floatArrayOf(100f, 200f, 300f, 400f),\n            knownVarianceDn2 = floatArrayOf(4f, 4f, 4f, 4f),\n            contributors = byteArrayOf(2, 2, 2, 2),\n            outputSha256 = outputSha,\n''',
+              '''            signalDn = floatArrayOf(100f, 200f, 300f, 400f),\n            outputSha256 = outputSha,\n''')
+          PY
+
+          git diff --check
+          git diff --stat
+
+      - name: Commit production fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Sahidul Haque'
+          git config user.email '145923523+sahid-code404@users.noreply.github.com'
+          git add app/src/main/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngine.kt \
+                  app/src/main/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriter.kt \
+                  app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt \
+                  app/src/test/java/com/sahidcode404/camx/core/imaging/reconstruction/Cp3ComputationalRawEngineTest.kt \
+                  app/src/test/java/com/sahidcode404/camx/core/imaging/interchange/Cp4ComputationalDngWriterTest.kt
+          git commit -m 'Fix computational RAW memory pressure and retry recovery'
+          git push origin HEAD:phase/camx2-computational-photo-integration
