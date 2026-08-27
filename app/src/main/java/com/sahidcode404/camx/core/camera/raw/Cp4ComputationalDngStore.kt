@@ -125,7 +125,7 @@ internal class Cp4ComputationalDngStore(context: Context) {
         "CamX2_CR_${System.currentTimeMillis()}_${context.captureToken.value}.dng"
 
     private fun uniqueCameraModel(context: RawCaptureContext): String {
-        val raw = "CamX2 ${Build.MANUFACTURER} ${Build.MODEL} ${context.cameraProfileFingerprint.value.take(24)}"
+        val raw = "CamX2 Computational RAW ${context.cameraProfileFingerprint.value.take(48)}"
         val printable = buildString(raw.length) {
             raw.forEach { char ->
                 append(if (char.code in 0x20..0x7e) char else '_')
