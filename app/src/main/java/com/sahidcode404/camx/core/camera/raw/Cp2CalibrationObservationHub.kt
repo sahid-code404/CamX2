@@ -34,8 +34,12 @@ internal object Cp2CalibrationObservationHub {
                     ?.let(::Rect),
                 blackLevels = blackLevels,
                 whiteLevel = characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL),
-                referenceIlluminant1 = characteristics.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1),
-                referenceIlluminant2 = characteristics.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2),
+                referenceIlluminant1 = characteristics
+                    .get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1)
+                    ?.toInt(),
+                referenceIlluminant2 = characteristics
+                    .get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)
+                    ?.toInt(),
             ),
         )
     }
