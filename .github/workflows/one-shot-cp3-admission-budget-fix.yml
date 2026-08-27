@@ -62,6 +62,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt .github/workflows/one-shot-cp3-admission-budget-fix.yml
+          git add -A
           git commit -m 'Fix CP3 post-burst heap admission'
           git push origin HEAD:phase/camx2-computational-photo-integration
