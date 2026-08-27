@@ -4,6 +4,7 @@ import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
+import android.os.Build
 import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -88,12 +89,25 @@ internal object Cp2CalibrationObservationHub {
         ordinal: Int,
         result: CaptureResult,
     ) {
+        // SENSOR_DYNAMIC_BLACK_LEVEL and SENSOR_DYNAMIC_WHITE_LEVEL were added in API 24. CamX2's
+        // minSdk remains 23, so API-23 devices truthfully report these optional fields as absent.
+        // SENSOR_NOISE_PROFILE is available on the Camera2 baseline and remains independently read.
+        val dynamicBlackLevels: List<Double>?
+        val dynamicWhiteLevel: Int?
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            dynamicBlackLevels = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                ?.map(Float::toDouble)
+            dynamicWhiteLevel = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
+        } else {
+            dynamicBlackLevels = null
+            dynamicWhiteLevel = null
+        }
+
         val observation = Cp2DynamicCalibrationObservation(
             ordinal = ordinal,
             sensorTimestampNs = timestampNs,
-            dynamicBlackLevels = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
-                ?.map(Float::toDouble),
-            dynamicWhiteLevel = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL),
+            dynamicBlackLevels = dynamicBlackLevels,
+            dynamicWhiteLevel = dynamicWhiteLevel,
             noiseProfile = result.get(CaptureResult.SENSOR_NOISE_PROFILE)?.map { pair ->
                 Cp2NoiseCoefficient(
                     shotSlope = pair.first,
@@ -142,7 +156,14 @@ internal object Cp2CalibrationObservationHub {
 
         fun finish(frameSet: ImmutableRawFrameSet): Cp2CalibrationBundle {
             check(closed.compareAndSet(false, true)) { "CP2 burst observation lease already consumed" }
-            return Cp2CalibrationObservationHub.finish(burstId, frameSet)
+            return try {
+                Cp2CalibrationObservationHub.finish(burstId, frameSet)
+            } catch (failure: Throwable) {
+                // finish() normally removes the active observation before assembling. If validation
+                // fails earlier, explicitly tear down the observer even though the lease is consumed.
+                Cp2CalibrationObservationHub.cancel(burstId)
+                throw failure
+            }
         }
 
         override fun close() {
