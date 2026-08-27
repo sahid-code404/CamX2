@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -25,7 +27,7 @@ internal class Cp2EvidenceStore(context: Context) {
             try {
                 File(staging, "manifest.json").writeText(
                     json.encodeToString(
-                        kotlinx.serialization.json.JsonElement.serializer(),
+                        JsonElement.serializer(),
                         manifest(bundle),
                     ),
                     StandardCharsets.UTF_8,
@@ -55,14 +57,7 @@ internal class Cp2EvidenceStore(context: Context) {
                         put("dynamicBlackLevels", doubleArrayJson(dynamic.dynamicBlackLevels))
                         dynamic.dynamicWhiteLevel?.let { put("dynamicWhiteLevel", it) }
                             ?: put("dynamicWhiteLevel", JsonNull)
-                        put("noiseProfile", buildJsonArray {
-                            dynamic.noiseProfile?.forEach { coefficient ->
-                                add(buildJsonObject {
-                                    put("shotSlope", coefficient.shotSlope)
-                                    put("readVariance", coefficient.readVariance)
-                                })
-                            }
-                        })
+                        put("noiseProfile", noiseProfileJson(dynamic.noiseProfile))
                     } ?: put("dynamic", JsonNull)
                 })
             }
@@ -84,7 +79,12 @@ internal class Cp2EvidenceStore(context: Context) {
         put("staticBlackLevelsPresent", report.staticBlackLevelsPresent)
         put("staticWhiteLevelPresent", report.staticWhiteLevelPresent)
         put("colorMatrixPairsPresent", report.colorMatrixPairsPresent)
-        put("unboundOrdinals", buildJsonArray { report.unboundOrdinals.forEach { add(it) } })
+        put(
+            "unboundOrdinals",
+            buildJsonArray {
+                report.unboundOrdinals.forEach { ordinal -> add(JsonPrimitive(ordinal)) }
+            },
+        )
         put("calibrationFingerprintSha256", report.calibrationFingerprintSha256)
         put("evidencePersisted", report.evidencePersisted)
         put("m5Blocker", "Camera2 exposes shot/read noise but no fixed-pattern-noise term; no value is invented")
@@ -99,7 +99,12 @@ internal class Cp2EvidenceStore(context: Context) {
         static.cfaArrangement?.let { put("cfaArrangement", it) } ?: put("cfaArrangement", JsonNull)
         put("activeArray", rectJson(static.activeArray))
         put("preCorrectionActiveArray", rectJson(static.preCorrectionActiveArray))
-        put("blackLevels", buildJsonArray { static.blackLevels?.forEach { add(it) } })
+        put(
+            "blackLevels",
+            static.blackLevels?.let { levels ->
+                buildJsonArray { levels.forEach { level -> add(JsonPrimitive(level)) } }
+            } ?: JsonNull,
+        )
         static.whiteLevel?.let { put("whiteLevel", it) } ?: put("whiteLevel", JsonNull)
         static.referenceIlluminant1?.let { put("referenceIlluminant1", it) }
             ?: put("referenceIlluminant1", JsonNull)
@@ -135,7 +140,18 @@ internal class Cp2EvidenceStore(context: Context) {
         }
     } ?: JsonNull
 
-    private fun doubleArrayJson(values: List<Double>?) = buildJsonArray {
-        values?.forEach { add(it) }
-    }
+    private fun doubleArrayJson(values: List<Double>?): JsonElement = values?.let {
+        buildJsonArray { it.forEach { value -> add(JsonPrimitive(value)) } }
+    } ?: JsonNull
+
+    private fun noiseProfileJson(values: List<Cp2NoiseCoefficient>?): JsonElement = values?.let {
+        buildJsonArray {
+            it.forEach { coefficient ->
+                add(buildJsonObject {
+                    put("shotSlope", coefficient.shotSlope)
+                    put("readVariance", coefficient.readVariance)
+                })
+            }
+        }
+    } ?: JsonNull
 }
