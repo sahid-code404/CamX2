@@ -5,9 +5,9 @@ import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationBundle
 import com.sahidcode404.camx.core.camera.raw.Cp2Matrix3x3Evidence
 import com.sahidcode404.camx.core.imaging.reconstruction.Cp3FusedCfa
 import com.sahidcode404.camx.core.imaging.reconstruction.Cp3FusionReport
-import java.io.DigestOutputStream
 import java.io.FilterOutputStream
 import java.io.OutputStream
+import java.security.DigestOutputStream
 import java.security.MessageDigest
 import kotlin.math.ceil
 
@@ -346,7 +346,20 @@ class Cp4ComputationalDngWriter {
         val externalKind: ExternalKind = ExternalKind.NORMAL,
         var externalOffset: Long = 0L,
     ) {
-        fun byteCount(): Long = checkedMultiply(typeSize(type).toLong(), count, "CP4 TIFF entry size overflow")
+        fun byteCount(): Long {
+            val bytesPerElement = when (type) {
+                1, 2 -> 1L
+                3 -> 2L
+                4 -> 4L
+                10 -> 8L
+                else -> throw IllegalArgumentException("Unsupported CP4 TIFF type $type")
+            }
+            return try {
+                Math.multiplyExact(bytesPerElement, count)
+            } catch (error: ArithmeticException) {
+                throw IllegalArgumentException("CP4 TIFF entry size overflow", error)
+            }
+        }
     }
 
     private enum class ExternalKind { NORMAL, PRIVATE }
@@ -366,13 +379,20 @@ class Cp4ComputationalDngWriter {
             require(offset >= 0 && length >= 0 && offset.toLong() + length.toLong() <= buffer.size.toLong())
             ensure(length.toLong())
             out.write(buffer, offset, length)
-            byteCount = checkedAdd(byteCount, length.toLong(), "CP4 output byte count overflow")
+            byteCount = try {
+                Math.addExact(byteCount, length.toLong())
+            } catch (error: ArithmeticException) {
+                throw IllegalArgumentException("CP4 output byte count overflow", error)
+            }
         }
 
         private fun ensure(additional: Long) {
-            require(checkedAdd(byteCount, additional, "CP4 output byte count overflow") <= maxBytes) {
-                "CP4 output exceeded the admitted byte budget"
+            val newCount = try {
+                Math.addExact(byteCount, additional)
+            } catch (error: ArithmeticException) {
+                throw IllegalArgumentException("CP4 output byte count overflow", error)
             }
+            require(newCount <= maxBytes) { "CP4 output exceeded the admitted byte budget" }
         }
     }
 
