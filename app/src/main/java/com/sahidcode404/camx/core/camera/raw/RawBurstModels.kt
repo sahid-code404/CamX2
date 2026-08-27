@@ -163,6 +163,25 @@ class ImmutableRawBurstFrame internal constructor(
 
     fun copyCanonicalRaster(): ByteArray = canonicalRaster.copyOf()
 
+    /** Read-only RAW16 access for downstream sensor-domain processing without duplicating the frame. */
+    internal fun raw16LittleEndianAt(x: Int, y: Int): Int {
+        require(x in 0 until rawSize.width && y in 0 until rawSize.height) {
+            "RAW16 sample coordinate lies outside the immutable burst frame"
+        }
+        val pixelIndex = y.toLong() * rawSize.width.toLong() + x.toLong()
+        val byteIndexLong = checkedMultiply(
+            pixelIndex,
+            M4BurstLimits.RAW_SENSOR_BYTES_PER_PIXEL,
+            "RAW16 sample offset overflow",
+        )
+        require(byteIndexLong <= Int.MAX_VALUE.toLong() - 1L) {
+            "RAW16 sample offset exceeds JVM array indexing"
+        }
+        val byteIndex = byteIndexLong.toInt()
+        return (canonicalRaster[byteIndex].toInt() and 0xff) or
+            ((canonicalRaster[byteIndex + 1].toInt() and 0xff) shl 8)
+    }
+
     internal fun writeCanonicalRaster(output: OutputStream) {
         output.write(canonicalRaster)
     }
