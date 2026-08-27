@@ -161,8 +161,6 @@ class Cp4ComputationalDngWriterTest {
             activeArea = IntRect(activeLeft, activeTop, 2, 2),
             cfaPattern = CfaPattern.RGGB,
             signalDn = floatArrayOf(100f, 200f, 300f, 400f),
-            knownVarianceDn2 = floatArrayOf(4f, 4f, 4f, 4f),
-            contributors = byteArrayOf(2, 2, 2, 2),
             outputSha256 = outputSha,
         )
         val report = Cp3FusionReport(

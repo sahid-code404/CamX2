@@ -219,17 +219,17 @@ class Cp4ComputationalDngWriter {
         }
         putUInt32(metadata, entryOffset, 0L)
 
-        // Current Cp3FusedCfa intentionally exposes immutable copies only. CP4 accounts for this
-        // temporary copy explicitly and never obtains mutable ownership of CP3's internal raster.
-        val signal = fused.copySignalDn()
-        require(signal.size.toLong() == pixels)
+        // Stream CP3's immutable signal directly. A second full-resolution FloatArray would make
+        // CP4 itself the next memory spike immediately after low-memory CP3 succeeds.
+        require(fused.pixelCount.toLong() == pixels)
         val digest = MessageDigest.getInstance("SHA-256")
         val counted = CountingOutputStream(DigestOutputStream(output, digest), maxOutputBytes)
         counted.write(metadata)
         writePadding(counted, privateOffset - counted.byteCount)
         counted.write(manifest)
         writePadding(counted, imageOffset - counted.byteCount)
-        signal.forEach { sample ->
+        for (index in 0 until fused.pixelCount) {
+            val sample = fused.signalDnAt(index)
             require(sample.isFinite() && sample >= 0f) { "CP4 fused sample is not finite non-negative sensor signal" }
             writeFloat32(counted, minOf(sample.toDouble(), outputWhite.toDouble()).toFloat())
         }

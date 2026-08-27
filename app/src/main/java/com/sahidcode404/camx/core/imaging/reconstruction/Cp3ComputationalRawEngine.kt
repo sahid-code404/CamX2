@@ -19,8 +19,8 @@ import kotlin.math.max
  * to [0,1], then converted back to DN^2 using the per-frame black/white range.
  */
 object Cp3ComputationalRawEngine {
-    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v1"
-    const val ALGORITHM_VERSION = 1
+    const val ALGORITHM_ID = "cp3.raw16.cfa-known-noise-fusion-v2-low-memory"
+    const val ALGORITHM_VERSION = 2
 
     private const val SEARCH_RADIUS_PIXELS = 8
     private const val SAMPLE_STEP_PIXELS = 32
@@ -30,7 +30,10 @@ object Cp3ComputationalRawEngine {
     private const val MIN_ALIGNMENT_COST_SEPARATION = 0.02
     private const val PER_PIXEL_RESIDUAL_SIGMA = 6.0
     private const val MIN_VARIANCE_DN2 = 1e-9
-    private const val OUTPUT_BYTES_PER_PIXEL = 9L
+    // Production CP3 retains only the fused signal raster. Per-pixel variance and contributor
+    // counts are fusion temporaries represented by aggregate report counters, not full-resolution
+    // persistent arrays. This cuts CP3 output residency from 9 B/px to 4 B/px.
+    private const val OUTPUT_BYTES_PER_PIXEL = 4L
     private const val SAFETY_MARGIN_BYTES = 1024L * 1024L
     private const val MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
 
@@ -208,8 +211,6 @@ object Cp3ComputationalRawEngine {
         val alignmentByOrdinal = evidence.associateBy { it.ordinal }
         val includedOrdinals = accepted.map { it.frame.ordinal }.sorted()
         val signalDn = FloatArray(activePixels.toInt())
-        val knownVarianceDn2 = FloatArray(activePixels.toInt())
-        val contributors = ByteArray(activePixels.toInt())
         var multiFramePixels = 0L
         var referenceOnlyPixels = 0L
         var censoredPixels = 0L
@@ -221,11 +222,6 @@ object Cp3ComputationalRawEngine {
                 val referenceSample = sample(reference, x, y)
                 if (referenceSample.censored) {
                     signalDn[outputIndex] = finiteFloat(referenceSample.signalDn, "CP3 reference signal")
-                    knownVarianceDn2[outputIndex] = finiteFloat(
-                        max(referenceSample.knownVarianceDn2, MIN_VARIANCE_DN2),
-                        "CP3 reference known variance",
-                    )
-                    contributors[outputIndex] = 1
                     referenceOnlyPixels++
                     censoredPixels++
                     outputIndex++
@@ -271,10 +267,7 @@ object Cp3ComputationalRawEngine {
                     "CP3 uncensored reference pixel must remain a deterministic fallback"
                 }
                 val fused = sumWeightedSignal / sumWeight
-                val variance = 1.0 / sumWeight
                 signalDn[outputIndex] = finiteFloat(fused, "CP3 fused signal")
-                knownVarianceDn2[outputIndex] = finiteFloat(variance, "CP3 fused known variance")
-                contributors[outputIndex] = contributorCount.toByte()
                 if (contributorCount >= 2) multiFramePixels++ else referenceOnlyPixels++
                 outputIndex++
             }
@@ -295,8 +288,6 @@ object Cp3ComputationalRawEngine {
             includedOrdinals = includedOrdinals,
             evidence = evidence,
             signalDn = signalDn,
-            knownVarianceDn2 = knownVarianceDn2,
-            contributors = contributors,
         )
         val report = Cp3FusionReport(
             success = true,
@@ -328,8 +319,6 @@ object Cp3ComputationalRawEngine {
                 activeArea = active,
                 cfaPattern = cfa,
                 signalDn = signalDn,
-                knownVarianceDn2 = knownVarianceDn2,
-                contributors = contributors,
                 outputSha256 = outputSha,
             ),
             report = report,
@@ -499,8 +488,6 @@ object Cp3ComputationalRawEngine {
         includedOrdinals: List<Int>,
         evidence: List<Cp3FrameEvidence>,
         signalDn: FloatArray,
-        knownVarianceDn2: FloatArray,
-        contributors: ByteArray,
     ): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun updateString(value: String) {
@@ -530,9 +517,10 @@ object Cp3ComputationalRawEngine {
                 frame.secondBestMeanNormalizedSquaredResidual?.let { java.lang.Double.toHexString(it) } ?: "null",
             )
         }
+        // V2 hashes the actual persistent fused raster plus immutable provenance. Noise and
+        // contributor evidence still controls fusion and report counters but is not duplicated into
+        // full-resolution persistent diagnostic arrays.
         signalDn.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }
-        knownVarianceDn2.forEach { updateInt(java.lang.Float.floatToIntBits(it)) }
-        digest.update(contributors)
         return digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
@@ -740,28 +728,27 @@ class Cp3FusedCfa internal constructor(
     val activeArea: IntRect,
     val cfaPattern: CfaPattern,
     signalDn: FloatArray,
-    knownVarianceDn2: FloatArray,
-    contributors: ByteArray,
     val outputSha256: String,
 ) {
-    // The engine creates these arrays exclusively for this object and never mutates them after
-    // construction. Keeping ownership instead of copying avoids doubling a full-resolution CP3 output.
+    // CP3 owns the fused signal array exclusively and never mutates it after construction. Variance
+    // and contributor maps are deliberately not retained at full resolution in the production path.
     private val signalDn = signalDn
-    private val knownVarianceDn2 = knownVarianceDn2
-    private val contributors = contributors
+
+    val pixelCount: Int get() = signalDn.size
 
     init {
         val expected = activeArea.width.toLong() * activeArea.height.toLong()
         require(expected <= Int.MAX_VALUE.toLong())
         require(this.signalDn.size == expected.toInt())
-        require(this.knownVarianceDn2.size == expected.toInt())
-        require(this.contributors.size == expected.toInt())
         require(outputSha256.length == 64)
     }
 
     fun copySignalDn(): FloatArray = signalDn.copyOf()
-    fun copyKnownVarianceDn2(): FloatArray = knownVarianceDn2.copyOf()
-    fun copyContributorCounts(): ByteArray = contributors.copyOf()
+
+    internal fun signalDnAt(index: Int): Float {
+        require(index in signalDn.indices) { "CP3 fused signal index is outside the active raster" }
+        return signalDn[index]
+    }
 }
 
 sealed interface Cp3FusionOutcome {

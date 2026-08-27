@@ -45,8 +45,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
+enum class ComputationalRawAcquisitionStatus {
+    CAPTURED,
+    FAILED,
+    CANCELLED,
+}
+
 data class ComputationalRawProbeResult(
-    val outcome: RawBurstCaptureOutcome,
+    val acquisitionStatus: ComputationalRawAcquisitionStatus,
     val report: RawBurstCaptureReport,
     val cp2Report: Cp2CalibrationReport? = null,
     val cp3Report: Cp3FusionReport? = null,
@@ -212,6 +218,30 @@ internal class Cp1CaptureCoordinator(
             displayRotation = displayRotation,
         )
 
+        // captureRawBurst starts preview restoration before it returns, but a new shutter transaction
+        // must not be admitted until the restored stream has produced a verified frame. This closes
+        // the real-device retry race that could turn a successful 8/8 burst into a following 0/8.
+        val restoredAfterBurst = try {
+            withTimeout(M4BurstLimits.DEFAULT_TIMEOUT_MILLIS) {
+                controller.state.filterIsInstance<CameraEngineState.Previewing>()
+                    .first { it.firstFrameVerified }
+            }
+        } catch (_: TimeoutCancellationException) {
+            cp2Observation?.close()
+            val detail = "CP1 preview restoration timed out after RAW burst"
+            report = report.copy(timedOut = true, failureDetail = detail)
+            return@coroutineScope failedResult(
+                RawBurstCaptureOutcome.Failed(RawCaptureRejected(detail)),
+                report,
+            )
+        }
+        if (!preflight.matches(restoredAfterBurst.selection)) {
+            cp2Observation?.close()
+            val detail = "CP1 selection changed while restoring preview after RAW burst"
+            report = report.copy(cancelled = true, failureDetail = detail)
+            return@coroutineScope failedResult(RawBurstCaptureOutcome.Cancelled, report)
+        }
+
         if (capturedOutcome is RawBurstCaptureOutcome.Captured && !report.success) {
             cp2Observation?.close()
             val detail = "CP1 returned a frame set but its acquisition evidence was incomplete"
@@ -269,7 +299,7 @@ internal class Cp1CaptureCoordinator(
                     null
                 }
                 ComputationalRawProbeResult(
-                    outcome = capturedOutcome,
+                    acquisitionStatus = ComputationalRawAcquisitionStatus.CAPTURED,
                     report = report.withEvidencePersisted(persisted),
                     cp2Report = cp2Report,
                     cp3Report = cp3Report,
@@ -354,7 +384,12 @@ internal class Cp1CaptureCoordinator(
         report: RawBurstCaptureReport,
     ): ComputationalRawProbeResult {
         val persisted = evidenceStore.persistFailure(report)
-        return ComputationalRawProbeResult(outcome, report.withEvidencePersisted(persisted))
+        val status = when (outcome) {
+            is RawBurstCaptureOutcome.Captured -> ComputationalRawAcquisitionStatus.CAPTURED
+            is RawBurstCaptureOutcome.Failed -> ComputationalRawAcquisitionStatus.FAILED
+            RawBurstCaptureOutcome.Cancelled -> ComputationalRawAcquisitionStatus.CANCELLED
+        }
+        return ComputationalRawProbeResult(status, report.withEvidencePersisted(persisted))
     }
 
     private fun captureIdentity(
@@ -393,21 +428,19 @@ internal class Cp1CaptureCoordinator(
     )
 
     /**
-     * ImageReader's RAW buffers are camera/native allocations, while the canonical frame copies live
-     * in the managed heap. The original CP1 probe compared the combined reservation only against
-     * managed-heap headroom, which could reject an otherwise admissible burst before request submit
-     * and report 0/8. Build a conservative composite ceiling: certified camera-buffer extent plus
-     * currently available managed-heap headroom, still capped by the frozen one-GiB M4 bound.
+     * ImageReader RAW buffers are camera/native allocations while canonical copies live in the managed
+     * heap. Runtime.freeMemory() is not an admission authority for a retry because ART may retain dead
+     * arrays until allocation pressure triggers GC. Use the bounded heap capacity minus an explicit app
+     * reserve; actual canonical allocations still remain inside the VM heap limit.
      */
     private fun cp1ResidentBudgetBytes(preflight: RawSourceLayoutCertification): Long {
-        val runtime = Runtime.getRuntime()
-        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
-        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)
+        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP1_MANAGED_HEAP_RESERVE_BYTES)
+            .coerceAtLeast(1L)
         val cameraBufferReservation = runCatching {
             Math.multiplyExact(CP1_REQUESTED_FRAMES.toLong(), preflight.sourceRequiredBytes)
         }.getOrElse { return M4BurstLimits.MAX_RESIDENT_BYTES }
         val composite = runCatching {
-            Math.addExact(cameraBufferReservation, managedHeapHeadroom)
+            Math.addExact(cameraBufferReservation, managedHeapCeiling)
         }.getOrElse { Long.MAX_VALUE }
         return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)
     }
@@ -456,6 +489,7 @@ internal class Cp1CaptureCoordinator(
 
     private companion object {
         const val CP1_REQUESTED_FRAMES = 8
+        const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L
         const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
     }
 }

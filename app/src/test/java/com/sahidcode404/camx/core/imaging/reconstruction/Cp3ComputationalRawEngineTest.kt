@@ -46,7 +46,19 @@ class Cp3ComputationalRawEngineTest {
         assertEquals(2, candidate.dxPixels)
         assertEquals(0, candidate.dyPixels)
         assertTrue(fused.report.multiFramePixelCount > 0L)
-        assertTrue(fused.fused.copyContributorCounts().any { (it.toInt() and 0xff) >= 2 })
+        assertEquals(SIZE * SIZE, fused.fused.pixelCount)
+    }
+
+    @Test
+    fun signalOnlyResidentBudgetAdmitsFourBytesPerPixel() {
+        val frameSet = frameSet(candidateDx = 2)
+        val calibration = calibration(frameSet)
+        val pixels = SIZE.toLong() * SIZE.toLong()
+        val exactV2Budget = frameSet.totalCanonicalBytes + pixels * 4L + 1024L * 1024L
+
+        val outcome = Cp3ComputationalRawEngine.fuse(frameSet, calibration, maxResidentBytes = exactV2Budget)
+
+        assertTrue(outcome is Cp3FusionOutcome.Fused)
     }
 
     @Test
