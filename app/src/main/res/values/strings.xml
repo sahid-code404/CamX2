@@ -18,6 +18,7 @@
     <string name="cp1_raw_busy">CP1 RAW: acquiring 8 frames…</string>
     <string name="cp1_raw_success">CP1 RAW: %1$d/%2$d paired</string>
     <string name="cp1_raw_failed">CP1 RAW failed: %1$d/%2$d paired</string>
+    <string name="cp1_cp2_success">CP1 %1$d/%2$d • CP2 %3$d/%2$d • noise %4$d/%2$d</string>
     <string name="raw_video_m10_unavailable">Sensor RAW video recording arrives with the M10 acquisition milestone.</string>
     <string name="camera_preview_starting">Starting camera…</string>
     <string name="camera_preview_waiting_surface">Preparing viewfinder…</string>
