@@ -186,6 +186,8 @@ fun CameraScreen(
                 }
             }
 
+            // RAW video remains paused. Keep the internal contract available for later work, but do
+            // not expose a VIDEO mode in the camera UI until that product path is actually resumed.
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -197,11 +199,6 @@ fun CameraScreen(
                     label = stringResource(R.string.camera_mode_photo),
                     selected = captureMode == CameraCaptureMode.PHOTO,
                     onClick = { captureMode = CameraCaptureMode.PHOTO },
-                )
-                ModeButton(
-                    label = stringResource(R.string.camera_mode_video),
-                    selected = captureMode == CameraCaptureMode.VIDEO,
-                    onClick = { captureMode = CameraCaptureMode.VIDEO },
                 )
             }
 

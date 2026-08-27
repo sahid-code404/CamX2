@@ -155,7 +155,7 @@ internal class Cp1CaptureCoordinator(
                 displayRotation = displayRotation,
                 frameCount = CP1_REQUESTED_FRAMES,
                 maxSourceBytesPerFrame = preflight.sourceRequiredBytes,
-                maxResidentBytes = cp1ResidentBudgetBytes(),
+                maxResidentBytes = cp1ResidentBudgetBytes(preflight),
                 timeoutMillis = M4BurstLimits.DEFAULT_TIMEOUT_MILLIS,
             )
         } catch (cancelled: CancellationException) {
@@ -316,11 +316,24 @@ internal class Cp1CaptureCoordinator(
         displayRotationAtShutter = context.displayRotationAtShutter,
     )
 
-    private fun cp1ResidentBudgetBytes(): Long {
+    /**
+     * ImageReader's RAW buffers are camera/native allocations, while the canonical frame copies live
+     * in the managed heap. The original CP1 probe compared the combined reservation only against
+     * managed-heap headroom, which could reject an otherwise admissible burst before request submit
+     * and report 0/8. Build a conservative composite ceiling: certified camera-buffer extent plus
+     * currently available managed-heap headroom, still capped by the frozen one-GiB M4 bound.
+     */
+    private fun cp1ResidentBudgetBytes(preflight: RawSourceLayoutCertification): Long {
         val runtime = Runtime.getRuntime()
-        val used = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
-        val headroom = (runtime.maxMemory() - used).coerceAtLeast(1L)
-        return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, headroom)
+        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
+        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)
+        val cameraBufferReservation = runCatching {
+            Math.multiplyExact(CP1_REQUESTED_FRAMES.toLong(), preflight.sourceRequiredBytes)
+        }.getOrElse { return M4BurstLimits.MAX_RESIDENT_BYTES }
+        val composite = runCatching {
+            Math.addExact(cameraBufferReservation, managedHeapHeadroom)
+        }.getOrElse { Long.MAX_VALUE }
+        return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)
     }
 
     private fun failureDetail(failure: com.sahidcode404.camx.core.camera.diagnostics.CameraFailure): String =
