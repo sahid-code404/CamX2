@@ -8,6 +8,9 @@ import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import com.sahidcode404.camx.core.camera.raw.AndroidDngWriter
 import com.sahidcode404.camx.core.camera.raw.AndroidDngWriterMode
 import com.sahidcode404.camx.core.camera.raw.Cp1EvidenceStore
+import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationObservationHub
+import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationReport
+import com.sahidcode404.camx.core.camera.raw.Cp2EvidenceStore
 import com.sahidcode404.camx.core.camera.raw.M4BurstLimits
 import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureIdentity
 import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureOutcome
@@ -35,12 +38,13 @@ import kotlinx.coroutines.withTimeout
 data class ComputationalRawProbeResult(
     val outcome: RawBurstCaptureOutcome,
     val report: RawBurstCaptureReport,
+    val cp2Report: Cp2CalibrationReport? = null,
 )
 
 /**
- * CP1 application orchestration only. CameraSessionController still owns every Camera2 device,
- * session, ImageReader, capture request and Image. This class performs a probe-only source-layout
- * certification, then requests exactly eight already-supported M4 RAW_SENSOR frames.
+ * CP1 acquisition plus CP2 calibration-evidence handoff. CameraSessionController still owns every
+ * Camera2 device, session, ImageReader, capture request and Image. CP2 only observes immutable
+ * metadata from the exact preflight characteristics and accepted burst results.
  */
 internal class Cp1CaptureCoordinator(
     context: Context,
@@ -49,6 +53,7 @@ internal class Cp1CaptureCoordinator(
     private val appContext = context.applicationContext
     private val layoutProbeWriter = AndroidDngWriter(appContext, AndroidDngWriterMode.LAYOUT_PROBE)
     private val evidenceStore = Cp1EvidenceStore(appContext)
+    private val cp2EvidenceStore = Cp2EvidenceStore(appContext)
     private val active = AtomicBoolean(false)
 
     suspend fun capture(displayRotation: DisplayRotation): ComputationalRawProbeResult {
@@ -128,7 +133,12 @@ internal class Cp1CaptureCoordinator(
                 )
             }
 
-            return runEightFrameBurst(displayRotation, preflight)
+            // CP2 is observational. If its diagnostic seam cannot be armed, CP1 still runs exactly
+            // as before and returns truthful 8-frame acquisition evidence with cp2Report == null.
+            val cp2Observation = runCatching {
+                Cp2CalibrationObservationHub.beginBurst(CP1_REQUESTED_FRAMES)
+            }.getOrNull()
+            return runEightFrameBurst(displayRotation, preflight, cp2Observation)
         } finally {
             active.set(false)
         }
@@ -137,6 +147,7 @@ internal class Cp1CaptureCoordinator(
     private suspend fun runEightFrameBurst(
         displayRotation: DisplayRotation,
         preflight: RawSourceLayoutCertification,
+        cp2Observation: Cp2CalibrationObservationHub.Cp2BurstObservationLease?,
     ): ComputationalRawProbeResult = coroutineScope {
         val diagnosticsSession = RawBurstDiagnosticsHub.begin()
         var observedIdentity: RawBurstCaptureIdentity? = null
@@ -159,6 +170,7 @@ internal class Cp1CaptureCoordinator(
                 timeoutMillis = M4BurstLimits.DEFAULT_TIMEOUT_MILLIS,
             )
         } catch (cancelled: CancellationException) {
+            cp2Observation?.close()
             identityObserver.cancelAndJoin()
             diagnostics = RawBurstDiagnosticsHub.finish(diagnosticsSession)
             val report = buildReport(
@@ -187,6 +199,7 @@ internal class Cp1CaptureCoordinator(
         )
 
         if (capturedOutcome is RawBurstCaptureOutcome.Captured && !report.success) {
+            cp2Observation?.close()
             val detail = "CP1 returned a frame set but its acquisition evidence was incomplete"
             report = report.copy(failureDetail = detail)
             return@coroutineScope failedResult(
@@ -198,14 +211,27 @@ internal class Cp1CaptureCoordinator(
         when (capturedOutcome) {
             is RawBurstCaptureOutcome.Captured -> {
                 val persisted = evidenceStore.persistSuccess(capturedOutcome.frameSet, report)
+                val cp2Bundle = cp2Observation?.let { observation ->
+                    runCatching { observation.finish(capturedOutcome.frameSet) }
+                        .onFailure { observation.close() }
+                        .getOrNull()
+                }
+                val cp2Report = cp2Bundle?.let { bundle ->
+                    val cp2Persisted = cp2EvidenceStore.persist(bundle)
+                    bundle.report.copy(evidencePersisted = cp2Persisted)
+                }
                 ComputationalRawProbeResult(
                     outcome = capturedOutcome,
                     report = report.withEvidencePersisted(persisted),
+                    cp2Report = cp2Report,
                 )
             }
             is RawBurstCaptureOutcome.Failed,
             RawBurstCaptureOutcome.Cancelled,
-            -> failedResult(capturedOutcome, report)
+            -> {
+                cp2Observation?.close()
+                failedResult(capturedOutcome, report)
+            }
         }
     }
 
