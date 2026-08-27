@@ -271,7 +271,7 @@ internal class Cp1CaptureCoordinator(
                             Cp3ComputationalRawEngine.fuse(
                                 frameSet = frameSet,
                                 calibration = bundle,
-                                maxResidentBytes = cp3ResidentBudgetBytes(frameSet),
+                                maxResidentBytes = cp3ResidentBudgetBytes(),
                             )
                         }
                     } catch (cancelled: CancellationException) {
@@ -445,15 +445,17 @@ internal class Cp1CaptureCoordinator(
         return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)
     }
 
-    /** CP3 input frames are already heap-owned, so only proven remaining heap headroom is added. */
-    private fun cp3ResidentBudgetBytes(frameSet: ImmutableRawFrameSet): Long {
-        val runtime = Runtime.getRuntime()
-        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
-        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)
-        val composite = runCatching {
-            Math.addExact(frameSet.totalCanonicalBytes, managedHeapHeadroom)
-        }.getOrElse { Long.MAX_VALUE }
-        return minOf(CP3_MAX_RESIDENT_BYTES, composite)
+    /**
+     * CP3 runs immediately after an eight-frame burst. Runtime.freeMemory() only reports currently
+     * committed free heap and does not include reclaimable dead burst/preflight allocations, so using
+     * it as an admission authority can falsely reject fusion before the FloatArray is even attempted.
+     * The immutable FrameSet is already resident; admit against the VM heap capacity with an explicit
+     * application reserve. ART remains free to collect dead transient allocations under pressure.
+     */
+    private fun cp3ResidentBudgetBytes(): Long {
+        val managedHeapCeiling = (Runtime.getRuntime().maxMemory() - CP3_MANAGED_HEAP_RESERVE_BYTES)
+            .coerceAtLeast(1L)
+        return minOf(CP3_MAX_RESIDENT_BYTES, managedHeapCeiling)
     }
 
     private fun cp3ExecutionFailure(
@@ -490,6 +492,7 @@ internal class Cp1CaptureCoordinator(
     private companion object {
         const val CP1_REQUESTED_FRAMES = 8
         const val CP1_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L
+        const val CP3_MANAGED_HEAP_RESERVE_BYTES = 48L * 1024L * 1024L
         const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
     }
 }
