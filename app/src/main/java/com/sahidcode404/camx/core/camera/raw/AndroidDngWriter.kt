@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
 import android.media.Image
+import android.media.ImageFormat
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -15,22 +16,41 @@ import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import java.io.FilterOutputStream
 import java.io.OutputStream
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+
+internal enum class AndroidDngWriterMode {
+    SAVE_DNG,
+    LAYOUT_PROBE,
+}
 
 /**
  * Android MediaStore + DngCreator boundary for one already-paired sensor RAW image.
  *
  * Camera ownership never crosses this class: it receives immutable shutter identity, immutable
- * characteristics/result metadata and one image whose ownership remains with the caller. The writer
- * creates a pending MediaStore row, writes the DNG, publishes it only after success, and deletes the
- * row on every recoverable failure through [MediaStoreTransaction].
+ * characteristics/result metadata and one image whose ownership remains with the caller. The normal
+ * mode creates a pending MediaStore row and publishes it only after success. CP1 may explicitly use
+ * LAYOUT_PROBE to inspect the real RAW_SENSOR plane layout without writing anything to the gallery.
  */
-internal class AndroidDngWriter(context: Context) {
+internal class AndroidDngWriter(
+    context: Context,
+    private val mode: AndroidDngWriterMode = AndroidDngWriterMode.SAVE_DNG,
+) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
 
     suspend fun write(
+        context: RawCaptureContext,
+        characteristics: CameraCharacteristics,
+        result: CaptureResult,
+        image: Image,
+    ): RawCaptureOutcome = when (mode) {
+        AndroidDngWriterMode.LAYOUT_PROBE -> withContext(Dispatchers.Default) {
+            RawCaptureOutcome.Probed(observeRawLayout(context, result, image))
+        }
+        AndroidDngWriterMode.SAVE_DNG -> writeDng(context, characteristics, result, image)
+    }
+
+    private suspend fun writeDng(
         context: RawCaptureContext,
         characteristics: CameraCharacteristics,
         result: CaptureResult,
@@ -110,6 +130,59 @@ internal class AndroidDngWriter(context: Context) {
                 }
                 RawCaptureOutcome.Failed(mapped)
             },
+        )
+    }
+
+    private fun observeRawLayout(
+        context: RawCaptureContext,
+        result: CaptureResult,
+        image: Image,
+    ): RawSourceLayoutCertification {
+        require(image.format == ImageFormat.RAW_SENSOR) { "CP1 preflight received a non-RAW_SENSOR Image" }
+        require(image.width == context.rawSize.width && image.height == context.rawSize.height) {
+            "CP1 preflight RAW dimensions diverged from capture identity"
+        }
+        val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+        require(timestamp != null && timestamp > 0L && image.timestamp == timestamp) {
+            "CP1 preflight Image/result SENSOR_TIMESTAMP pairing is invalid"
+        }
+        require(image.planes.size == 1) { "CP1 preflight RAW_SENSOR must expose exactly one plane" }
+        val plane = image.planes[0]
+        val canonicalRowBytes = Math.multiplyExact(
+            context.rawSize.width.toLong(),
+            M4BurstLimits.RAW_SENSOR_BYTES_PER_PIXEL,
+        )
+        require(canonicalRowBytes <= Int.MAX_VALUE.toLong()) { "CP1 preflight canonical row exceeds JVM addressing" }
+        require(plane.pixelStride == M4BurstLimits.RAW_SENSOR_BYTES_PER_PIXEL.toInt()) {
+            "CP1 preflight RAW_SENSOR pixel stride is not two bytes"
+        }
+        require(plane.rowStride.toLong() >= canonicalRowBytes) {
+            "CP1 preflight RAW_SENSOR row stride is smaller than a meaningful row"
+        }
+        val sourceRequired = Math.addExact(
+            Math.multiplyExact((context.rawSize.height - 1).toLong(), plane.rowStride.toLong()),
+            canonicalRowBytes,
+        )
+        require(sourceRequired <= M4BurstLimits.MAX_SOURCE_BYTES_PER_FRAME) {
+            "CP1 preflight RAW source extent exceeds the bounded M4 frame limit"
+        }
+        val source = plane.buffer.duplicate()
+        source.clear()
+        require(sourceRequired <= source.capacity().toLong()) {
+            "CP1 preflight RAW plane buffer is shorter than its declared layout"
+        }
+        return RawSourceLayoutCertification(
+            captureToken = context.captureToken,
+            selectionGeneration = context.selectionGeneration,
+            sessionGeneration = context.sessionGeneration,
+            canonicalLensFingerprint = context.canonicalLensFingerprint,
+            cameraProfileFingerprint = context.cameraProfileFingerprint,
+            routeId = context.routeId,
+            rawSize = context.rawSize,
+            imageFormat = image.format,
+            rowStrideBytes = plane.rowStride,
+            pixelStrideBytes = plane.pixelStride,
+            sourceRequiredBytes = sourceRequired,
         )
     }
 

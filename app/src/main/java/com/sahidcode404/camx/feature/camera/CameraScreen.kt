@@ -59,9 +59,12 @@ fun CameraScreen(
     inventoryStatus: LensInventoryStatus? = null,
     photoCaptureEnabled: Boolean = false,
     videoCaptureEnabled: Boolean = false,
+    showCp1Action: Boolean = false,
+    cp1CaptureEnabled: Boolean = false,
     captureBusy: Boolean = false,
     captureMessage: String? = null,
     onCapturePhoto: () -> Unit = {},
+    onCaptureCp1: () -> Unit = {},
     onToggleVideoRecording: () -> Unit = {},
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
     onDeepRescan: () -> Unit = {},
@@ -122,6 +125,18 @@ fun CameraScreen(
                 }
             }
         } else {
+            if (showCp1Action) {
+                TextButton(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 32.dp, start = 12.dp),
+                    enabled = cp1CaptureEnabled && !captureBusy,
+                    onClick = onCaptureCp1,
+                ) {
+                    Text(stringResource(R.string.cp1_raw_burst_action))
+                }
+            }
+
             TextButton(
                 modifier = Modifier
                     .align(Alignment.TopEnd)

@@ -84,8 +84,12 @@ class RawBurstTimestampPairer<I : AutoCloseable, R : Any>(
             image.closeQuietly()
             return null
         }
+        RawBurstDiagnosticsHub.imageReceived()
         if (timestampNs <= 0L) failWithImage(image, "Burst image timestamp is not positive")
-        if (!seenImageTimestamps.add(timestampNs)) failWithImage(image, "Duplicate burst image timestamp")
+        if (!seenImageTimestamps.add(timestampNs)) {
+            RawBurstDiagnosticsHub.duplicateImageTimestamp()
+            failWithImage(image, "Duplicate burst image timestamp")
+        }
         if (seenImageTimestamps.size > expectedFrames) failWithImage(image, "Burst delivered more images than reserved")
 
         val tagged = results.remove(timestampNs)
@@ -100,10 +104,17 @@ class RawBurstTimestampPairer<I : AutoCloseable, R : Any>(
     @Synchronized
     fun offerResult(timestampNs: Long, ordinal: Int, result: R): RawBurstPairSet<I, R>? {
         ensureOpen()
+        RawBurstDiagnosticsHub.resultReceived()
         if (timestampNs <= 0L) fail("Burst result timestamp is not positive")
         if (ordinal !in 0 until expectedFrames) fail("Burst result ordinal is outside the reserved range")
-        if (!seenResultTimestamps.add(timestampNs)) fail("Duplicate burst result timestamp")
-        if (!seenResultOrdinals.add(ordinal)) fail("Duplicate burst result ordinal")
+        if (!seenResultTimestamps.add(timestampNs)) {
+            RawBurstDiagnosticsHub.duplicateResultTimestamp()
+            fail("Duplicate burst result timestamp")
+        }
+        if (!seenResultOrdinals.add(ordinal)) {
+            RawBurstDiagnosticsHub.duplicateOrdinal()
+            fail("Duplicate burst result ordinal")
+        }
         if (seenResultTimestamps.size > expectedFrames) fail("Burst delivered more results than reserved")
 
         val image = images.remove(timestampNs)
@@ -122,6 +133,7 @@ class RawBurstTimestampPairer<I : AutoCloseable, R : Any>(
     override fun close() {
         if (closed) return
         closed = true
+        RawBurstDiagnosticsHub.pairingClosed(images.size, results.size)
         images.values.forEach { it.closeQuietly() }
         images.clear()
         results.clear()
@@ -132,6 +144,7 @@ class RawBurstTimestampPairer<I : AutoCloseable, R : Any>(
     private fun addPair(ordinal: Int, timestampNs: Long, image: I, result: R) {
         if (pairedByOrdinal.containsKey(ordinal)) failWithImage(image, "Burst ordinal was paired twice")
         pairedByOrdinal[ordinal] = RawBurstPair(ordinal, timestampNs, image, result)
+        RawBurstDiagnosticsHub.exactPairCreated()
         if (pairedByOrdinal.size > expectedFrames) fail("Burst paired more frames than reserved")
     }
 

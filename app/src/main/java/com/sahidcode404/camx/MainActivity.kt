@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
                 var storagePermissionGranted by remember { mutableStateOf(hasLegacyStoragePermission()) }
                 var pendingLegacyCapture by remember { mutableStateOf(false) }
                 var captureRequestNonce by remember { mutableStateOf(0) }
+                var cp1RequestNonce by remember { mutableStateOf(0) }
                 var captureBusy by remember { mutableStateOf(false) }
                 var captureMessage by remember { mutableStateOf<String?>(null) }
 
@@ -73,6 +74,7 @@ class MainActivity : ComponentActivity() {
                 val captureCancelledText = stringResource(R.string.capture_raw_cancelled)
                 val captureFailedText = stringResource(R.string.capture_raw_failed)
                 val storagePermissionText = stringResource(R.string.capture_storage_permission_required)
+                val cp1BusyText = stringResource(R.string.cp1_raw_busy)
 
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
@@ -112,6 +114,7 @@ class MainActivity : ComponentActivity() {
                             visiblePreviewGraph.capturePhoto(currentDisplayRotation())
                         ) {
                             is RawCaptureOutcome.Saved -> captureSavedText
+                            is RawCaptureOutcome.Probed -> captureFailedText
                             is RawCaptureOutcome.Failed -> captureFailedText
                             RawCaptureOutcome.Cancelled -> captureCancelledText
                         }
@@ -119,6 +122,34 @@ class MainActivity : ComponentActivity() {
                         throw cancelled
                     } catch (_: Throwable) {
                         captureMessage = captureFailedText
+                    } finally {
+                        captureBusy = false
+                    }
+                }
+                LaunchedEffect(cp1RequestNonce) {
+                    if (cp1RequestNonce <= 0 || captureBusy) return@LaunchedEffect
+                    captureBusy = true
+                    captureMessage = cp1BusyText
+                    try {
+                        val result = visiblePreviewGraph.captureComputationalRawProbe(currentDisplayRotation())
+                        val report = result.report
+                        captureMessage = if (report.success) {
+                            getString(
+                                R.string.cp1_raw_success,
+                                report.exactPairsCreated,
+                                report.requestedFrames,
+                            )
+                        } else {
+                            getString(
+                                R.string.cp1_raw_failed,
+                                report.exactPairsCreated,
+                                report.requestedFrames,
+                            )
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        captureMessage = getString(R.string.cp1_raw_failed, 0, 8)
                     } finally {
                         captureBusy = false
                     }
@@ -141,6 +172,8 @@ class MainActivity : ComponentActivity() {
                         inventoryStatus = lensInventoryStatus,
                         photoCaptureEnabled = photoCaptureAvailable,
                         videoCaptureEnabled = false,
+                        showCp1Action = BuildConfig.DEBUG,
+                        cp1CaptureEnabled = photoCaptureAvailable,
                         captureBusy = captureBusy,
                         captureMessage = captureMessage,
                         onCapturePhoto = {
@@ -152,6 +185,9 @@ class MainActivity : ComponentActivity() {
                                     captureRequestNonce += 1
                                 }
                             }
+                        },
+                        onCaptureCp1 = {
+                            if (!captureBusy && photoCaptureAvailable) cp1RequestNonce += 1
                         },
                         onToggleVideoRecording = {},
                         onLensSelected = visiblePreviewGraph.coordinator::selectLens,

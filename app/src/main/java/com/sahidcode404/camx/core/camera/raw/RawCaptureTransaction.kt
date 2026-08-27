@@ -5,6 +5,7 @@ import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 
 sealed interface RawCaptureOutcome {
     data class Saved(val contentUri: String, val byteCount: Long) : RawCaptureOutcome
+    data class Probed(val layout: RawSourceLayoutCertification) : RawCaptureOutcome
     data class Failed(val failure: CameraFailure) : RawCaptureOutcome
     data object Cancelled : RawCaptureOutcome
 }

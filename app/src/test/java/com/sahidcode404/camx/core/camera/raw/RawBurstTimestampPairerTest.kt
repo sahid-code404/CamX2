@@ -9,25 +9,24 @@ import org.junit.Test
 class RawBurstTimestampPairerTest {
     @Test
     fun outOfOrderCallbacksProduceExactOrdinalOrder() {
-        val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 3)
-        val firstImage = CountingCloseable()
-        val secondImage = CountingCloseable()
-        val thirdImage = CountingCloseable()
+        val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 4)
+        val images = List(4) { CountingCloseable() }
 
-        pairer.offerResult(300L, 2, "r2")
-        pairer.offerImage(100L, firstImage)
+        // CP1 acceptance case: images arrive 3,1,0,2 and results arrive 0,2,3,1.
+        pairer.offerImage(400L, images[3])
+        pairer.offerImage(200L, images[1])
+        pairer.offerImage(100L, images[0])
+        pairer.offerImage(300L, images[2])
         pairer.offerResult(100L, 0, "r0")
-        pairer.offerImage(300L, thirdImage)
-        pairer.offerResult(200L, 1, "r1")
-        val completed = pairer.offerImage(200L, secondImage)
+        pairer.offerResult(300L, 2, "r2")
+        pairer.offerResult(400L, 3, "r3")
+        val completed = pairer.offerResult(200L, 1, "r1")
 
         assertNotNull(completed)
-        assertEquals(listOf(0, 1, 2), completed!!.pairs.map { it.ordinal })
-        assertEquals(listOf(100L, 200L, 300L), completed.pairs.map { it.timestampNs })
+        assertEquals(listOf(0, 1, 2, 3), completed!!.pairs.map { it.ordinal })
+        assertEquals(listOf(100L, 200L, 300L, 400L), completed.pairs.map { it.timestampNs })
         completed.close()
-        assertEquals(1, firstImage.closeCount)
-        assertEquals(1, secondImage.closeCount)
-        assertEquals(1, thirdImage.closeCount)
+        images.forEach { assertEquals(1, it.closeCount) }
     }
 
     @Test
@@ -61,6 +60,28 @@ class RawBurstTimestampPairerTest {
     }
 
     @Test
+    fun duplicateResultTimestampFailsAndIsCounted() {
+        val diagnostics = RawBurstDiagnosticsHub.begin()
+        try {
+            val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 2)
+            pairer.offerResult(100L, 0, "r0")
+
+            assertThrows(RawBurstPairingException::class.java) {
+                pairer.offerResult(100L, 1, "duplicate timestamp")
+            }
+
+            val snapshot = RawBurstDiagnosticsHub.finish(diagnostics)
+            assertEquals(2, snapshot.resultsReceived)
+            assertEquals(1, snapshot.duplicateResultTimestamps)
+            assertEquals(0, snapshot.duplicateOrdinals)
+            assertEquals(1, snapshot.unmatchedResults)
+        } catch (failure: Throwable) {
+            runCatching { RawBurstDiagnosticsHub.finish(diagnostics) }
+            throw failure
+        }
+    }
+
+    @Test
     fun closingIncompleteBurstNeverReturnsPartialFrameSet() {
         val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 3)
         val image = CountingCloseable()
@@ -72,6 +93,50 @@ class RawBurstTimestampPairerTest {
 
         assertEquals(1, image.closeCount)
         assertEquals(Triple(0, 0, 0), pairer.pendingCounts())
+    }
+
+    @Test
+    fun resultAndImageWithoutPartnersRemainTruthfullyUnmatchedOnClose() {
+        val diagnostics = RawBurstDiagnosticsHub.begin()
+        try {
+            val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 2)
+            val unmatchedImage = CountingCloseable()
+            pairer.offerImage(100L, unmatchedImage)
+            pairer.offerResult(200L, 1, "unmatched-result")
+            pairer.close()
+
+            val snapshot = RawBurstDiagnosticsHub.finish(diagnostics)
+            assertEquals(1, snapshot.imagesReceived)
+            assertEquals(1, snapshot.resultsReceived)
+            assertEquals(0, snapshot.exactPairsCreated)
+            assertEquals(1, snapshot.unmatchedImages)
+            assertEquals(1, snapshot.unmatchedResults)
+            assertEquals(1, unmatchedImage.closeCount)
+        } catch (failure: Throwable) {
+            runCatching { RawBurstDiagnosticsHub.finish(diagnostics) }
+            throw failure
+        }
+    }
+
+    @Test
+    fun duplicateOrdinalIsCountedWithoutCreatingFalseMembership() {
+        val diagnostics = RawBurstDiagnosticsHub.begin()
+        try {
+            val pairer = RawBurstTimestampPairer<CountingCloseable, String>(expectedFrames = 2)
+            pairer.offerResult(100L, 0, "r0")
+
+            assertThrows(RawBurstPairingException::class.java) {
+                pairer.offerResult(200L, 0, "duplicate-ordinal")
+            }
+
+            val snapshot = RawBurstDiagnosticsHub.finish(diagnostics)
+            assertEquals(1, snapshot.duplicateOrdinals)
+            assertEquals(0, snapshot.exactPairsCreated)
+            assertEquals(1, snapshot.unmatchedResults)
+        } catch (failure: Throwable) {
+            runCatching { RawBurstDiagnosticsHub.finish(diagnostics) }
+            throw failure
+        }
     }
 
     @Test

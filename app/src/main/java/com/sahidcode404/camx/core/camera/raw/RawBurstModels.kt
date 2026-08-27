@@ -4,6 +4,7 @@ import com.sahidcode404.camx.core.camera.diagnostics.CameraFailure
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import com.sahidcode404.camx.core.camera.model.RawContractLimits
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.Collections
 
@@ -157,9 +158,14 @@ class ImmutableRawBurstFrame internal constructor(
         require(canonicalByteCount > 0L && canonicalByteCount <= M4BurstLimits.MAX_SOURCE_BYTES_PER_FRAME) {
             "Canonical RAW frame is empty or exceeds the M4 bound"
         }
+        RawBurstDiagnosticsHub.frameCopiedAndAccepted()
     }
 
     fun copyCanonicalRaster(): ByteArray = canonicalRaster.copyOf()
+
+    internal fun writeCanonicalRaster(output: OutputStream) {
+        output.write(canonicalRaster)
+    }
 }
 
 /**

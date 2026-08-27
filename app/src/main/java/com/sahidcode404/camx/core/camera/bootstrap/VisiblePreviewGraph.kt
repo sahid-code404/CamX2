@@ -74,6 +74,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val environment = runtimeEnvironmentFingerprint()
     private val controller = CameraSessionController(cameraManager)
     private val dngWriter = AndroidDngWriter(appContext)
+    private val cp1CaptureCoordinator = Cp1CaptureCoordinator(appContext, controller)
     private val seedDiscovery = AndroidFirstInstallSeedDiscovery(
         cameraManager = cameraManager,
         environment = environment,
@@ -316,6 +317,10 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
 
     suspend fun capturePhoto(displayRotation: DisplayRotation): RawCaptureOutcome =
         controller.captureRawDng(displayRotation, dngWriter)
+
+    internal suspend fun captureComputationalRawProbe(
+        displayRotation: DisplayRotation,
+    ): ComputationalRawProbeResult = cp1CaptureCoordinator.capture(displayRotation)
 
     fun requestDeepRescan(): DeepRescanRequestResult {
         val result = deepRescanCoordinator.requestDeepRescan()

@@ -14,6 +14,10 @@
     <string name="capture_raw_cancelled">Capture cancelled</string>
     <string name="capture_raw_failed">RAW capture failed</string>
     <string name="capture_storage_permission_required">Storage permission is required to save DNG photos on this Android version.</string>
+    <string name="cp1_raw_burst_action">CP1 RAW Burst</string>
+    <string name="cp1_raw_busy">CP1 RAW: acquiring 8 frames…</string>
+    <string name="cp1_raw_success">CP1 RAW: %1$d/%2$d paired</string>
+    <string name="cp1_raw_failed">CP1 RAW failed: %1$d/%2$d paired</string>
     <string name="raw_video_m10_unavailable">Sensor RAW video recording arrives with the M10 acquisition milestone.</string>
     <string name="camera_preview_starting">Starting camera…</string>
     <string name="camera_preview_waiting_surface">Preparing viewfinder…</string>
