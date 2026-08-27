@@ -8,9 +8,12 @@ import com.sahidcode404.camx.core.camera.model.RawCaptureContext
 import com.sahidcode404.camx.core.camera.raw.AndroidDngWriter
 import com.sahidcode404.camx.core.camera.raw.AndroidDngWriterMode
 import com.sahidcode404.camx.core.camera.raw.Cp1EvidenceStore
+import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationBundle
 import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationObservationHub
 import com.sahidcode404.camx.core.camera.raw.Cp2CalibrationReport
 import com.sahidcode404.camx.core.camera.raw.Cp2EvidenceStore
+import com.sahidcode404.camx.core.camera.raw.Cp3EvidenceStore
+import com.sahidcode404.camx.core.camera.raw.ImmutableRawFrameSet
 import com.sahidcode404.camx.core.camera.raw.M4BurstLimits
 import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureIdentity
 import com.sahidcode404.camx.core.camera.raw.RawBurstCaptureOutcome
@@ -21,9 +24,14 @@ import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
 import com.sahidcode404.camx.core.camera.raw.RawSourceLayoutCertification
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
+import com.sahidcode404.camx.core.imaging.reconstruction.Cp3ComputationalRawEngine
+import com.sahidcode404.camx.core.imaging.reconstruction.Cp3FixedPatternNoiseMode
+import com.sahidcode404.camx.core.imaging.reconstruction.Cp3FusionOutcome
+import com.sahidcode404.camx.core.imaging.reconstruction.Cp3FusionReport
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
@@ -39,12 +47,13 @@ data class ComputationalRawProbeResult(
     val outcome: RawBurstCaptureOutcome,
     val report: RawBurstCaptureReport,
     val cp2Report: Cp2CalibrationReport? = null,
+    val cp3Report: Cp3FusionReport? = null,
 )
 
 /**
- * CP1 acquisition plus CP2 calibration-evidence handoff. CameraSessionController still owns every
- * Camera2 device, session, ImageReader, capture request and Image. CP2 only observes immutable
- * metadata from the exact preflight characteristics and accepted burst results.
+ * CP1 acquisition plus CP2 calibration and CP3 sensor-domain fusion handoff. CameraSessionController
+ * still owns every Camera2 device, session, ImageReader, capture request and Image. CP2 observes exact
+ * metadata and CP3 operates only on immutable copied RAW evidence after Camera2 ownership has ended.
  */
 internal class Cp1CaptureCoordinator(
     context: Context,
@@ -54,6 +63,7 @@ internal class Cp1CaptureCoordinator(
     private val layoutProbeWriter = AndroidDngWriter(appContext, AndroidDngWriterMode.LAYOUT_PROBE)
     private val evidenceStore = Cp1EvidenceStore(appContext)
     private val cp2EvidenceStore = Cp2EvidenceStore(appContext)
+    private val cp3EvidenceStore = Cp3EvidenceStore(appContext)
     private val active = AtomicBoolean(false)
 
     suspend fun capture(displayRotation: DisplayRotation): ComputationalRawProbeResult {
@@ -210,9 +220,10 @@ internal class Cp1CaptureCoordinator(
 
         when (capturedOutcome) {
             is RawBurstCaptureOutcome.Captured -> {
-                val persisted = evidenceStore.persistSuccess(capturedOutcome.frameSet, report)
+                val frameSet = capturedOutcome.frameSet
+                val persisted = evidenceStore.persistSuccess(frameSet, report)
                 val cp2Bundle = cp2Observation?.let { observation ->
-                    runCatching { observation.finish(capturedOutcome.frameSet) }
+                    runCatching { observation.finish(frameSet) }
                         .onFailure { observation.close() }
                         .getOrNull()
                 }
@@ -220,10 +231,31 @@ internal class Cp1CaptureCoordinator(
                     val cp2Persisted = cp2EvidenceStore.persist(bundle)
                     bundle.report.copy(evidencePersisted = cp2Persisted)
                 }
+                val cp3Report = cp2Bundle?.let { bundle ->
+                    val fusionReport = try {
+                        when (val fusion = withContext(Dispatchers.Default) {
+                            Cp3ComputationalRawEngine.fuse(
+                                frameSet = frameSet,
+                                calibration = bundle,
+                                maxResidentBytes = cp3ResidentBudgetBytes(frameSet),
+                            )
+                        }) {
+                            is Cp3FusionOutcome.Fused -> fusion.report
+                            is Cp3FusionOutcome.Failed -> fusion.report
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        cp3ExecutionFailure(frameSet, bundle, failure)
+                    }
+                    val cp3Persisted = cp3EvidenceStore.persist(fusionReport)
+                    fusionReport.withEvidencePersisted(cp3Persisted)
+                }
                 ComputationalRawProbeResult(
                     outcome = capturedOutcome,
                     report = report.withEvidencePersisted(persisted),
                     cp2Report = cp2Report,
+                    cp3Report = cp3Report,
                 )
             }
             is RawBurstCaptureOutcome.Failed,
@@ -362,10 +394,50 @@ internal class Cp1CaptureCoordinator(
         return minOf(M4BurstLimits.MAX_RESIDENT_BYTES, composite)
     }
 
+    /** CP3 input frames are already heap-owned, so only proven remaining heap headroom is added. */
+    private fun cp3ResidentBudgetBytes(frameSet: ImmutableRawFrameSet): Long {
+        val runtime = Runtime.getRuntime()
+        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
+        val managedHeapHeadroom = (runtime.maxMemory() - usedHeap).coerceAtLeast(1L)
+        val composite = runCatching {
+            Math.addExact(frameSet.totalCanonicalBytes, managedHeapHeadroom)
+        }.getOrElse { Long.MAX_VALUE }
+        return minOf(CP3_MAX_RESIDENT_BYTES, composite)
+    }
+
+    private fun cp3ExecutionFailure(
+        frameSet: ImmutableRawFrameSet,
+        calibration: Cp2CalibrationBundle,
+        failure: Throwable,
+    ): Cp3FusionReport = Cp3FusionReport(
+        success = false,
+        algorithmId = Cp3ComputationalRawEngine.ALGORITHM_ID,
+        algorithmVersion = Cp3ComputationalRawEngine.ALGORITHM_VERSION,
+        requestedFrames = frameSet.frames.size,
+        referenceOrdinal = null,
+        exposureIdentityFrames = 0,
+        alignedFrames = 0,
+        contributingFrames = 0,
+        activePixelCount = 0L,
+        multiFramePixelCount = 0L,
+        referenceOnlyPixelCount = 0L,
+        censoredPixelCount = 0L,
+        rejectedPixelMeasurements = 0L,
+        calibrationFingerprintSha256 = calibration.report.calibrationFingerprintSha256,
+        sourceCanonicalSha256 = frameSet.frames.map { it.canonicalSha256 },
+        includedOrdinals = emptyList(),
+        frameEvidence = emptyList(),
+        outputSha256 = null,
+        fixedPatternNoiseMode = Cp3FixedPatternNoiseMode.UNAVAILABLE_NOT_INVENTED,
+        evidencePersisted = false,
+        failureDetail = "CP3 execution failed: ${failure.javaClass.simpleName}",
+    )
+
     private fun failureDetail(failure: com.sahidcode404.camx.core.camera.diagnostics.CameraFailure): String =
         (failure as? RawCaptureRejected)?.reason ?: failure.javaClass.simpleName
 
     private companion object {
         const val CP1_REQUESTED_FRAMES = 8
+        const val CP3_MAX_RESIDENT_BYTES = 1024L * 1024L * 1024L
     }
 }
