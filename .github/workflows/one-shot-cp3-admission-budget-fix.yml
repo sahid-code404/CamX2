@@ -51,10 +51,10 @@ jobs:
 
           git rm .github/workflows/one-shot-cp3-admission-budget-fix.yml
           git diff --check
-          git diff --exit-code -- app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt && {
+          if git diff --quiet -- app/src/main/java/com/sahidcode404/camx/core/camera/bootstrap/Cp1CaptureCoordinator.kt; then
             echo 'CP3 admission patch produced no source change' >&2
             exit 1
-          }
+          fi
 
       - name: Commit recovery fix
         shell: bash
