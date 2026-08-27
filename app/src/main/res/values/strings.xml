@@ -14,13 +14,15 @@
     <string name="capture_raw_cancelled">Capture cancelled</string>
     <string name="capture_raw_failed">RAW capture failed</string>
     <string name="capture_storage_permission_required">Storage permission is required to save DNG photos on this Android version.</string>
-    <string name="cp1_raw_burst_action">CP1 RAW Burst</string>
-    <string name="cp1_raw_busy">Computational RAW: acquiring and processing 8 frames…</string>
+    <string name="cp1_raw_burst_action">Computational RAW</string>
+    <string name="cp1_raw_busy">Computational RAW: acquiring, fusing and saving 8 frames…</string>
     <string name="cp1_raw_success">CP1 RAW: %1$d/%2$d paired</string>
     <string name="cp1_raw_failed">CP1 RAW failed: %1$d/%2$d paired</string>
     <string name="cp1_cp2_success">CP1 %1$d/%2$d • CP2 %3$d/%2$d • noise %4$d/%2$d</string>
     <string name="cp1_cp2_cp3_success">CP1 %1$d/%2$d • CP2 %3$d/%2$d • CP3 fused %4$d/%2$d</string>
     <string name="cp1_cp2_cp3_failed">CP1 %1$d/%2$d • CP2 %3$d/%2$d • CP3 blocked: %4$s</string>
+    <string name="cp1_cp2_cp3_cp4_success">Computational DNG saved • CP1 %1$d/%2$d • CP2 %3$d/%2$d • fused %4$d/%2$d</string>
+    <string name="cp1_cp2_cp3_cp4_failed">CP1 %1$d/%2$d • CP2 %3$d/%2$d • fused %4$d/%2$d • CP4 failed: %5$s</string>
     <string name="raw_video_m10_unavailable">Sensor RAW video recording arrives with the M10 acquisition milestone.</string>
     <string name="camera_preview_starting">Starting camera…</string>
     <string name="camera_preview_waiting_surface">Preparing viewfinder…</string>
