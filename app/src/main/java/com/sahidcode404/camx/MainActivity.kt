@@ -134,7 +134,15 @@ class MainActivity : ComponentActivity() {
                         val result = visiblePreviewGraph.captureComputationalRawProbe(currentDisplayRotation())
                         val report = result.report
                         captureMessage = if (report.success) {
-                            getString(
+                            result.cp2Report?.let { cp2 ->
+                                getString(
+                                    R.string.cp1_cp2_success,
+                                    report.exactPairsCreated,
+                                    report.requestedFrames,
+                                    cp2.exactDynamicBindings,
+                                    cp2.noiseProfileFrames,
+                                )
+                            } ?: getString(
                                 R.string.cp1_raw_success,
                                 report.exactPairsCreated,
                                 report.requestedFrames,
