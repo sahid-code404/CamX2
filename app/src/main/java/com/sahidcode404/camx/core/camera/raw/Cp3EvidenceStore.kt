@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -61,12 +62,18 @@ internal class Cp3EvidenceStore(context: Context) {
         put("noiseSemantics", "Camera2 SENSOR_NOISE_PROFILE N(x)^2=S*x+O with normalized x; converted to DN^2")
         put("cp4NegativeWritten", false)
         report.failureDetail?.let { put("failureDetail", it) } ?: put("failureDetail", JsonNull)
-        put("sourceCanonicalSha256", buildJsonArray {
-            report.sourceCanonicalSha256.forEach { add(it) }
-        })
-        put("includedOrdinals", buildJsonArray {
-            report.includedOrdinals.forEach { add(it) }
-        })
+        put(
+            "sourceCanonicalSha256",
+            buildJsonArray {
+                report.sourceCanonicalSha256.forEach { sha -> add(JsonPrimitive(sha)) }
+            },
+        )
+        put(
+            "includedOrdinals",
+            buildJsonArray {
+                report.includedOrdinals.forEach { ordinal -> add(JsonPrimitive(ordinal)) }
+            },
+        )
         put("frames", buildJsonArray {
             report.frameEvidence.forEach { frame ->
                 add(buildJsonObject {
