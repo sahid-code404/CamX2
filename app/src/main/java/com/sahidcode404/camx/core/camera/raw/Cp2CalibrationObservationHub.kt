@@ -118,7 +118,9 @@ internal object Cp2CalibrationObservationHub {
         synchronized(lock) {
             val active = activeBurst ?: return
             if (active.id != burstId || ordinal !in 0 until active.expectedFrames) return
-            active.dynamicByOrdinal.putIfAbsent(ordinal, observation)
+            if (!active.dynamicByOrdinal.containsKey(ordinal)) {
+                active.dynamicByOrdinal[ordinal] = observation
+            }
         }
     }
 
