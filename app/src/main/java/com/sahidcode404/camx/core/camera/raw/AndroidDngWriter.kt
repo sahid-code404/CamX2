@@ -45,7 +45,7 @@ internal class AndroidDngWriter(
         image: Image,
     ): RawCaptureOutcome = when (mode) {
         AndroidDngWriterMode.LAYOUT_PROBE -> withContext(Dispatchers.Default) {
-            RawCaptureOutcome.Probed(observeRawLayout(context, result, image))
+            RawCaptureOutcome.Probed(observeRawLayout(context, characteristics, result, image))
         }
         AndroidDngWriterMode.SAVE_DNG -> writeDng(context, characteristics, result, image)
     }
@@ -135,6 +135,7 @@ internal class AndroidDngWriter(
 
     private fun observeRawLayout(
         context: RawCaptureContext,
+        characteristics: CameraCharacteristics,
         result: CaptureResult,
         image: Image,
     ): RawSourceLayoutCertification {
@@ -171,6 +172,11 @@ internal class AndroidDngWriter(
         require(sourceRequired <= source.capacity().toLong()) {
             "CP1 preflight RAW plane buffer is shorter than its declared layout"
         }
+
+        // CP2 receives the exact CameraCharacteristics already supplied by the sole camera owner.
+        // Failure to read optional calibration must never invalidate CP1 acquisition evidence.
+        runCatching { Cp2CalibrationObservationHub.observeStatic(characteristics) }
+
         return RawSourceLayoutCertification(
             captureToken = context.captureToken,
             selectionGeneration = context.selectionGeneration,
