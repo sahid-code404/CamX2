@@ -117,6 +117,10 @@ class RawBurstTimestampPairer<I : AutoCloseable, R : Any>(
         }
         if (seenResultTimestamps.size > expectedFrames) fail("Burst delivered more results than reserved")
 
+        // CP2 sees only an already-validated request ordinal/timestamp. Observer errors can never
+        // affect the fail-closed M4 pairing transaction.
+        RawBurstResultObservationHub.observe(timestampNs, ordinal, result)
+
         val image = images.remove(timestampNs)
         if (image != null) {
             addPair(ordinal, timestampNs, image, result)
