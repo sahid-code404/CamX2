@@ -68,7 +68,7 @@ jobs:
           test "$version_code" -le 2100000000
           short_sha="${CAMX_SOURCE_SHA:0:12}"
           commit_epoch="$(git show -s --format=%ct "$CAMX_SOURCE_SHA")"
-          commit_timestamp="$(date --utc --date="@$commit_epoch" +%Y-%m-%dT%H:%M:%SZ")"
+          commit_timestamp="$(date --utc --date="@$commit_epoch" +%Y-%m-%dT%H:%M:%SZ)"
           changelog="$(git log -1 --pretty=%s "$CAMX_SOURCE_SHA")"
           echo "DEV_OTA_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
           echo "DEV_OTA_VERSION_NAME=0.1.0-dev.${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
